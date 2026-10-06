@@ -2494,9 +2494,12 @@ function buildQuoteBody(){
     validPolCopy:c.validPolCopy||'No',
     isPreClaimed:'No', ownershipChange:'No', preNCB:'',
     vehicleNo:toHyphenReg(vehicle.reg),
+    // Vendor Q4: Previous Policy Number is required at the Quote API when
+    // a valid previous policy is declared. NCB is not required for TP.
     ...(hasPrevPol ? {
       previousInsurer: vehicle.previousInsurer||'',
       prepolExpiryDate: c.prepolExpiryDate||'',
+      prevoiusPolicyNumber: c.previousPolicyNumber || '',
     } : {}),
     ...(kycId?{kycId}:{}),
   };
@@ -2661,10 +2664,10 @@ function splitRegistration(reg){
 
 // Build the HDFC bike-proposal payload. Combines the quote/addons (already
 // built) with the API-1 response and a fully-populated proposal object per
-// the vendor doc. Uses verified eKYC values wherever available, falling
-// back to typed customer data. Sends internal journey-state fields as
-// null/blank per the doc's note.
-function buildProposalBody(){
+// the HDFC Two-Wheeler Proposal doc. Uses verified eKYC values wherever
+// available, falling back to typed customer data. Sends internal
+// journey-state fields as null/blank per the doc's note.
+function buildBikeProposalBody(){
   const insertBody = buildQuoteBody();
   const c = vehicle.customer || {};
   const k = vehicle.kyc || {};
@@ -2805,12 +2808,128 @@ function buildProposalBody(){
   };
 }
 
+// Build the HDFC car-proposal payload per the HDFC Four-Wheeler API doc.
+// Payload shape is simpler than bike: fewer journey-state fields, no
+// fullname/orgName/tpprevoius*/cpa*/photoupload fields. Wrapper key is
+// `carAddons` / `carQuoteResponse` (not bikeAddons / quoteResponseBike).
+function buildCarProposalBody(){
+  const insertBody = buildQuoteBody();
+  const c = vehicle.customer || {};
+  const k = vehicle.kyc || {};
+  const kd = k.raw || {};
+  const gj = vehicle._quoteResponse || {};
+  const addr = c.address || {};
+  const nominee = c.nominee || {};
+  const {regA, regB, regC, regD} = splitRegistration(vehicle.reg);
+
+  const fullname = k.fullName || c.fullname || '';
+  const nameParts = fullname.trim().split(/\s+/);
+  const firstName = nameParts[0] || '';
+  const lastName  = nameParts.slice(1).join(' ') || nameParts[0] || '';
+  const dob = k.dob || '';
+  const pan = k.pan || '';
+  const pincode = String(kd.permanentPincode || addr.pincode || '');
+  const addrL1 = kd.permanentAddress1 || addr.line || '';
+  const addrL2 = kd.permanentAddress2 || '';
+  const pm = (vehicle.kyc && vehicle.kyc.pincodeMaster) || {};
+  const stateName = (pm.stateName || addr.state || '').toUpperCase();
+  const stateCode = pm.stateCode || '';
+  const cityName  = (pm.cityName  || kd.permanentCity || addr.city || '').toUpperCase();
+  const cityCode  = pm.cityCode  || '';
+
+  const nomineeParts = String(nominee.name||'').trim().split(/\s+/);
+  const nomineeFname = nomineeParts[0] || '';
+  const nomineeLname = nomineeParts.slice(1).join(' ') || nomineeParts[0] || '';
+
+  const pTransactionId = gj.pTransactionId || String(insertBody.quote.quoteId || '');
+  const partnerTransId = String(insertBody.quote.quoteId || '');
+
+  const proposal = {
+    salutation: c.salutation || 'Mr',
+    pTransactionId,
+    firstName, lastName,
+    dob,
+    email: (c.email||'').toUpperCase(),
+    mobile: c.mobile || '',
+    panCard: pan,
+    gender: c.gender || 'Male',
+    maritialValue: c.maritalValue || '', maritialText: c.maritalText || '',
+    occupationValue: c.occupation || '', occupationText: c.occupationText || c.occupation || '',
+    gstNo: '', adhaarNumber: '',
+    nomineeFname, nomineeLname,
+    nomineeDob: nominee.dob || '',
+    relationshipValue: nominee.relation || '',
+    relationshipText: nominee.relationText || nominee.relation || '',
+    vehicleOwnedBy: c.vehicleOwnedBy || 'I',
+    rto: vehicle.rto || '',
+    regA, regB, regC, regD,
+    regDate: c.regDate || '',
+    engineNo: c.engineNo || '',
+    chassisNo: c.chassisNo || '',
+    isVehcileFinance: !!c.hypothecated,
+    financeCity: '',
+    isPuc: !!c.hasPuc, pucNo: c.pucNo || '', pucExpiryDate: c.pucExpiryDate || null,
+    prevoiusInsurerValue: c.validPolCopy==='Yes' ? (vehicle.previousInsurer || '').toUpperCase() : '',
+    prevoiusInsurerText:  c.validPolCopy==='Yes' ? (vehicle.previousInsurer || '') : '',
+    prevoiusPolicyNumber: c.previousPolicyNumber || '',
+    prevoiusPolicyType:   c.previousYearPolicyType || '',
+    prevoiusPolicyExpiryDate: c.prepolExpiryDate || '',
+    policyType: c.validPolCopy==='Yes' ? 'renewcar' : 'expired',
+    addrL1, addrL2, landmark: '',
+    stateName, stateCode, cityName, cityCode,
+    pincode,
+    isSameAddressChecked: true,
+    rcLandmark: '', rcAddrL1: addrL1, rcAddrL2: addrL2,
+    rcStateName: stateName, rcStateCode: stateCode,
+    rcCityName:  cityName,  rcCityCode: cityCode,
+    rcPincode: pincode,
+    make: vehicle.make || '',
+    model: vehicle.model || '',
+    variant: vehicle.variantHint || vehicle.variant || '',
+    idv: '0',
+    coverType: 'TPOnly',
+    mfgYear: c.mfgYear || '', mfgMonth: c.mfgMonth || '',
+    transId: partnerTransId,
+    netPremium:     String(gj.netPremium || ''),
+    payablePremium: String(gj.payablePremium || vehicle.price || ''),
+    serviceTax:     String(gj.serviceTax || ''),
+    insurerName: 'hdfc',
+    termsCondition: 'true',
+    polStartDateToSaiba: gj.policystartDate || '',
+    polEndDateToSaiba:   gj.policyEndDate || '',
+    seatCapacity: String(pickSeatCapacity() || '5'),
+    // HDFC 4W doc §proposal: cc is the engine cubic capacity, numeric string
+    // (e.g. "1198"). Variant strings carry it as "... (1198 CC)" — extract.
+    cc: (function(){
+      const v = String(vehicle.variantHint || vehicle.variant || '');
+      const m = v.match(/\((\d+)\s*CC\)/i);
+      return m ? m[1] : (vehicle.cc ? String(vehicle.cc) : '');
+    })(),
+    ckycNumber: k.ckycNumber || '',
+    isKYCDone: true,
+    kycPan: pan, kycDob: dob,
+    eky_Id: k.kycId || '',
+  };
+
+  return {
+    quote: insertBody.quote,
+    carAddons: insertBody.carAddons,
+    carQuoteResponse: gj,
+    proposal,
+  };
+}
+
 // Session storage key for the proposal handoff params + partner transId,
 // so /payment/return.html can pick them up after the HDFC gateway round-trip.
 const PROPOSAL_STATE_KEY = 'bi:proposal:hdfc';
 
-function goingToPayHdfcBike(){
-  return vehicle.line==='Two-Wheeler' && (vehicle.insurerCode||'HDFCTP')==='HDFCTP';
+// HDFC's quote + proposal + payment flow is wired for both 2W and 4W (per the
+// HDFC Two-Wheeler and Four-Wheeler API docs). Digit's proposal/issuance isn't
+// documented yet, so Digit still routes through the "coming soon" placeholder.
+function goingToPayHdfc(){
+  const line = vehicle.line;
+  const code = vehicle.insurerCode || 'HDFCTP';
+  return (line==='Two-Wheeler' || line==='Car') && code==='HDFCTP';
 }
 
 // Vendor Q9: use the KYC pincode to look up the correct state/city from the
@@ -2847,17 +2966,18 @@ async function payNow(){
   say('mobErr','Your e-policy arrives here on WhatsApp and SMS.');
   const btn=document.getElementById('payBtn');
 
-  // Only HDFC 2-wheeler is wired end-to-end. Car flow and Digit-bike flow
-  // don't yet have proposal / issuance docs from the vendor.
-  if(!goingToPayHdfcBike()){
+  // HDFC car + bike are both wired to proposal + CIS + payment. Digit-bike
+  // and other combinations don't have vendor-documented issuance yet, so they
+  // fall through to the manual-follow-up placeholder.
+  if(!goingToPayHdfc()){
     btn.classList.add('paying');btn.innerHTML='Preparing…';
     setTimeout(()=>{
       btn.classList.remove('paying');btn.innerHTML='Pay securely <svg class="i"><use href="#i-arrow"/></svg>';
-      const which = vehicle.line==='Two-Wheeler' ? 'Digit two-wheeler' : (vehicle.line==='Car'?'Private car':'Commercial vehicle');
+      const which = vehicle.line==='Two-Wheeler' ? 'Digit two-wheeler' : (vehicle.line==='Car'?'Digit private car':'Commercial vehicle');
       document.getElementById('doneMsg').innerHTML =
-        `<b>Policy issuance for ${which} is coming soon.</b><br>`+
+        `<b>Instant issuance for ${which} is coming soon.</b><br>`+
         `Our team will contact you on <b>+91 ${mobile}</b> to complete this purchase manually.<br>`+
-        `Meanwhile, please switch to HDFC ERGO on the Price step for two-wheeler policies that can be issued instantly.`;
+        `Meanwhile, please switch to HDFC ERGO on the Price step for instant policy issuance.`;
       trackLead('pay_manual_followup');
       resetLeadId();
       goFlow(7);
@@ -2866,21 +2986,27 @@ async function payNow(){
     return;
   }
 
-  // HDFC 2W — real proposal + CIS review + payment redirect.
+  // HDFC (car or bike) — real proposal + CIS review + payment redirect.
+  const isBike = vehicle.line === 'Two-Wheeler';
+  const proposalEndpoint = isBike ? '/api/swapinsurer/bike-proposal' : '/api/swapinsurer/car-proposal';
+  const moduleName = isBike ? 'bike' : 'car';
   btn.classList.add('paying');btn.innerHTML='Preparing your proposal…';
   trackLead('pay_initiated');
 
   try {
     // Vendor Q9: fetch state/city from KYC pincode BEFORE building proposal.
     await enrichAddressFromKycPincode();
-    const proposalBody = buildProposalBody();
+    const proposalBody = isBike ? buildBikeProposalBody() : buildCarProposalBody();
     btn.innerHTML='Submitting to HDFC ERGO…';
-    const r = await fetch('/api/swapinsurer/bike-proposal',{
+    const r = await fetch(proposalEndpoint,{
       method:'POST', headers:{'content-type':'application/json'},
       body: JSON.stringify(proposalBody),
     });
     const j = await r.json();
-    if(!r.ok || j.errorStatus){
+    // Proposal API returns errorStatus as boolean, null, or stringified "true"
+    // depending on the path. Treat all truthy string/boolean variants as a failure.
+    const propErr = j.errorStatus === true || (typeof j.errorStatus === 'string' && j.errorStatus.toLowerCase() === 'true');
+    if(!r.ok || propErr){
       throw new Error(j.errorMessage || j.error || `Proposal failed (${r.status})`);
     }
     if(j.isBreakin){
@@ -2897,7 +3023,7 @@ async function payNow(){
       hdfcTxnId: j.transactionID,
       proposalNo: j.proposalNo || j.statusTransactionID || '',
       amount: j.txnAmount || String(vehicle.price||''),
-      module: 'bike',
+      module: moduleName,
       insurerCode: 'HDFCTP',
       insurerLabel: 'HDFC ERGO',
       returnUrl: j.successFailureURL || '',

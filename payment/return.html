@@ -218,27 +218,41 @@ dd{margin:0;color:#1a1a2e;font-weight:700;text-align:right;word-break:break-all;
     return null;
   }
 
-  async function issuePolicyAndDownload(saved){
+  async function issuePolicyAndDownload(saved, paid){
     renderSpinner('Payment confirmed. Issuing your policy…');
+    // Pull the paymentDate out of the HDFC callback's hdnmsg (parseHdfcHdnmsg
+    // on the server stores it as "15-09-2026 11:24:35"). Vendor expects
+    // dd/MM/yyyy — fall back to today if the callback didn't carry it.
     const paymentDate = (function(){
-      // Try to parse the paymentDateTime from the HDFC callback ("15-09-2026 11:24:35") → "15/09/2026"
-      // Fall back to today.
+      const dt = paid && paid.paymentDateTime ? String(paid.paymentDateTime) : '';
+      const m = dt.match(/^(\d{2})-(\d{2})-(\d{4})/);
+      if (m) return m[1] + '/' + m[2] + '/' + m[3];
       const t = new Date();
       const dd = String(t.getDate()).padStart(2,'0');
       const mm = String(t.getMonth()+1).padStart(2,'0');
       const yy = t.getFullYear();
       return dd + '/' + mm + '/' + yy;
     })();
+    // Vendor Q7c: send transaction/proposal/amount keys with the exact casing
+    // per the selected module. HDFC's bike doc uses PascalCase
+    // (TransactionID / ProposalNumber / Amount); the 4W doc uses lowerCamel
+    // (transactionID / proposalNumber / amount). Branch here so each module
+    // matches its spec.
+    const mod = saved.module || 'bike';
+    const txId = saved.hdfcTxnId;
+    const propNo = saved.proposalNo;
+    const amt = String(saved.amount || '');
+    const casedKeys = mod === 'car'
+      ? { transactionID: txId, proposalNumber: propNo, amount: amt }
+      : { TransactionID: txId, ProposalNumber: propNo, Amount: amt };
     const paramater = {
       insurerName: 'HDFC',
       applicationId: saved.hdfcTxnId,
       refProposal: saved.proposalNo,
       coverType: 'TPOnly',
-      module: saved.module || 'bike',
+      module: mod,
       transId: saved.partnerTransId || saved.transId,
-      TransactionID: saved.hdfcTxnId,
-      ProposalNumber: saved.proposalNo,
-      Amount: String(saved.amount || ''),
+      ...casedKeys,
       paymentDate,
     };
     let policyNumber = '';
@@ -359,7 +373,7 @@ dd{margin:0;color:#1a1a2e;font-weight:700;text-align:right;word-break:break-all;
       }, '');
       return;
     }
-    await issuePolicyAndDownload(saved);
+    await issuePolicyAndDownload(saved, rec);
   })();
 })();
 </script>

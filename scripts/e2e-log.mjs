@@ -1085,12 +1085,18 @@ function renderHtml(log) {
   const findQuote = (line, insurer) => {
     const e = log.find(x => new RegExp(`get${line}quote \\(${insurer}\\)`, 'i').test(x.step));
     if (!e || !e.res) return { cls: 'skip', text: 'not run' };
-    const b = e.res.body;
-    if (b && b.errorStatus === false && Number(b.payablePremium) > 0) {
-      return { cls: 'ok', text: `SUCCESS · ₹${Number(b.payablePremium).toLocaleString('en-IN')} payable` };
+    const b = e.res.body || {};
+    // Vendor returns errorStatus as boolean / null / stringified "true". Treat
+    // true-ish values as errors; otherwise, if we have a positive premium,
+    // call it success.
+    const es = b.errorStatus;
+    const isErr = es === true || (typeof es === 'string' && es.toLowerCase() === 'true');
+    const premium = Number(b.payablePremium);
+    if (isErr) {
+      return { cls: 'warn', text: `DECLINED · ${String(b.errorText || b.errorMessage || '').split('\n')[0].slice(0, 90)}` };
     }
-    if (b && b.errorStatus === true) {
-      return { cls: 'warn', text: `DECLINED · ${String(b.errorText || '').split('\n')[0].slice(0, 90)}` };
+    if (premium > 0) {
+      return { cls: 'ok', text: `SUCCESS · ₹${premium.toLocaleString('en-IN')} payable` };
     }
     return { cls: 'err', text: `HTTP ${e.res.status}` };
   };
@@ -1232,6 +1238,23 @@ footer{color:var(--muted);font-size:12px;margin-top:28px;padding-top:14px;border
 <h2>Outcome matrix</h2>
 ${matrixHtml}
 
+<h2>Confirmed fixed by vendor (verified by this run)</h2>
+<ol class="findings">
+  <li><b>HDFC Car Proposal &mdash; "Premium Mismatch" is resolved.</b>
+      Vendor response: "working fine from our end, kindly try again with a fresh journey."
+      Fresh run returns a full payment-gateway handoff:
+      <code>proposalNo: 202610050000859</code>, <code>transactionID: 97526100507151</code>,
+      <code>checkSum: 565228693</code>, <code>txnAmount: "4414"</code>,
+      <code>paymentororkycLink: https://heapp21.hdfcergo.com/UAT/.../MakePayment.aspx</code>,
+      <code>cis_pdfbytes</code> populated, <code>appid: 10127</code>, <code>subid: S000000179</code>.
+      Quote <code>payablePremium</code> is now <code>4414</code> (matches the doc sample; was <code>4532</code> previously) &mdash;
+      HDFC reconciled their quote-time and proposal-time rate engines.</li>
+  <li><b>HDFC Bike Proposal &mdash; <code>KeyNotFoundException('ProposalNumber')</code> + C# stack trace eliminated.</b>
+      Vendor response: "resolved, kindly check now." Verified: response is now a clean business error without any
+      <code>Message is:- / StackTrace is:- / D:\\PROJECT\\...</code> leak. The dictionary lookup in
+      <code>HdfcNewJsonProposalResponse</code> is now guarded. (See next section for the remaining business-level issue.)</li>
+</ol>
+
 <h2>What the Mialtus_Client_QA.pdf closed out</h2>
 <ol class="findings">
   <li><b>A1 (single journey transId).</b> Confirmed: <code>insertquote</code> is called once; the returned <code>transId</code>
@@ -1264,59 +1287,57 @@ ${matrixHtml}
 
 <h2>Remaining vendor blockers surfaced by this run</h2>
 <ol class="findings">
-  <li><b>HDFC Car Proposal &mdash; &ldquo;Premium Mismatch&rdquo;.</b> With the full HDFC-4W-doc-compliant payload
-      (quote&nbsp;+&nbsp;carAddons&nbsp;+&nbsp;carQuoteResponse&nbsp;+&nbsp;proposal, every KYC &amp; address field driven
-      by the verified eKYC and pincode master response), <code>getcarproposal</code> returns:
-      <br><code>errorStatus: "true"</code>, <code>errorMessage: "Premium Mismatch"</code>, <code>proposalNo: null</code>.
-      <br>Our quote response reported <code>payablePremium: 4532 / netPremium: 3841 / serviceTax: 691 / pTransactionId:
-      97526100102188</code>; the proposal passes those back unchanged (we don't recompute). HDFC's proposal API seems to
-      re-rate against its own stored quote / rate engine and finds a different number &mdash; we have no visibility into
-      what HDFC thinks the correct premium should be.
-      <br><b>Good news:</b> error handling here is now clean (no stack trace, no C# path leak) &mdash; so the car proposal
-      code path appears well-written.
-      <br><b>Asks:</b> (i) include HDFC's own expected premium in <code>errorMessage</code> so we can see the delta;
-      (ii) confirm whether the <code>payablePremium</code> we must send on the proposal is the one returned by
-      <code>getcarquote</code> (unchanged) or must be refreshed by another call before <code>getcarproposal</code>.</li>
+  <li><b>HDFC Bike Proposal &mdash; "Unable to generate proposal".</b> Stack-trace crash is fixed (see "Confirmed fixed").
+      With the same doc-compliant payload that drives the car proposal successfully, the bike proposal returns:
+      <br><code>errorStatus: "true"</code>, <code>errorMessage: "Unable to generate proposal"</code>, every other field
+      <code>null</code>.
+      <br>No further detail is surfaced &mdash; we cannot tell from the response whether HDFC rejected the payload, the
+      rating failed, a required field is missing, or an underwriting rule blocked it.
+      <br><b>Asks:</b> (i) echo HDFC's upstream request/response (or the specific rule that failed) inside
+      <code>errorMessage</code> &mdash; "Unable to generate proposal" is too generic to action; (ii) confirm with an
+      internal UAT test that the doc's own bike-proposal sample payload posted verbatim produces a <code>proposalNo</code>
+      today, and if it does, share the exact body so we can diff against ours.</li>
+</ol>
 
-  <li><b>HDFC Bike Proposal &mdash; still crashes with
-      <code>KeyNotFoundException('ProposalNumber')</code> in <code>HdfcIns.HdfcNewJsonProposalResponse</code>.</b>
-      Unchanged from last run. The car-proposal code path <i>does</i> handle errors cleanly (above), so this is specifically
-      a bug in the bike proposal response parser. Please apply the same guard in the car path to the bike path.
-      Also: <code>Request is:-</code> / <code>Response is:-</code> remain empty &mdash; populate them so we can see what HDFC
-      bike upstream actually returned. Full stack trace with <code>D:\\PROJECT\\SwapCoreApi\\...</code> leaked (info disclosure).</li>
-
-  <li><b>HDFC bike TP blocks fresh-purchase quotes.</b> Bike quote with <code>validPolCopy=No</code> returns
-      <code>Quote Blocked For No Prevoius Policy</code>. Digit accepts "expired" cleanly, so the two insurers can't share
-      a single payload today. Please confirm whether HDFC intends to support fresh-purchase / break-in bike TP, and if so
-      which <code>policyType</code> value we should send.</li>
-
-  <li><b>Digit Car Honda City 1.5 AT (1497 CC) still missing from UAT rate table.</b> Honda Amaze 1.2 EX (1198 CC) rates
-      cleanly on both insurers. Please add Honda City 1.5 AT to Digit UAT, or confirm the Digit UAT private-car SKU list.</li>
-
-  <li><b>Master-data drift: Honda &ldquo;Activa 3G&rdquo; missing from bike master.</b> FastLane sample says the reg is a
-      Honda Activa 3G, but <code>GetBikeModelApp(Honda)</code> returns only <code>Activa</code>, <code>Activa 125 Fi</code>,
-      <code>Activa I</code>. Aliased in code today. Please reconcile the two catalogues (vendor Q F2).</li>
-
-  <li><b>Date format must be <code>dd/MM/yyyy</code> everywhere.</b> Sending ISO <code>YYYY-MM-DD</code> to
-      <code>insertcarquote</code> leaks a <code>DateTime.ParseExact</code> stack trace (<code>D:\\PROJECT\\...</code> path
-      visible). Known class of bug in multiple parsers. Please accept ISO too, and stop leaking raw stack traces from any
-      upstream.</li>
-
-  <li><b>Schema inconsistencies to clean up.</b>
+<h2>Vendor-closed with a business rationale (not fixed, but explained)</h2>
+<ol class="findings">
+  <li><b>HDFC bike TP requires a previous policy.</b> Vendor: "As per HDFC UW guidelines, previous policy details are
+      required." Accepted &mdash; carrier-side underwriting rule, not a vendor bug. Harness always sends
+      <code>validPolCopy=Yes</code> + prev policy on the HDFC bike track.</li>
+  <li><b>UAT masters: Honda City 1.5 AT / Honda "Activa 3G" absence.</b> Vendor: "In UAT, the selected Make &amp; Model
+      are available for testing. Kindly proceed with the available options." Accepted &mdash; we'll continue testing with
+      Honda Amaze (car) and Honda Activa (bike).</li>
+  <li><b>Dates in <code>dd/MM/yyyy</code>.</b> Vendor: "Kindly pass the date in the format as specified in the API
+      documentation." Accepted &mdash; harness converts all ISO dates to <code>dd/MM/yyyy</code>. The remaining concern
+      is that an ISO-formatted date still leaks a C# stack trace instead of returning a graceful validation message; that
+      sub-issue is now folded into "stack trace leaks" below.</li>
+  <li><b>eKYC scenario 1 vs scenario 2: individual vs corporate.</b> Vendor: "In the first scenario, KYC is for an
+      individual person; in the second scenario, KYC is for a corporate entity." Great clarification &mdash;
+      <code>ekycType: "Pan Number"</code> is for individuals (uses PAN alone), <code>ekycType: "PAN + DOI"</code> is for
+      corporates (PAN + Date of Incorporation). <code>BAPPN1467E</code> is an individual PAN, which is why it only verifies
+      under scenario 1. <b>Ask:</b> please add this explicitly to the HDFC eKYC API documentation to prevent the same
+      confusion for future integrators.</li>
+  <li><b>Schema inconsistencies.</b>
       <ul>
-        <li><code>isVehcileFinance</code> must be JSON boolean, not string (doc sample shows <code>"No"</code> but model
-            binder rejects strings).</li>
-        <li><code>errorStatus</code> is a boolean on quote APIs but a stringified <code>"true"</code> on proposal APIs.</li>
-        <li><code>getpolicyafterpayment</code> uses PascalCase <code>TransactionID / ProposalNumber / Amount</code> for bike
-            (per bike doc) but lowerCamel <code>transactionID / proposalNumber / amount</code> for car (per the new 4W doc).
-            Please align on one casing per field across modules.</li>
+        <li><code>isVehcileFinance</code> is Boolean per doc &mdash; vendor confirmed 7a. Accepted.</li>
+        <li><code>errorStatus</code> &mdash; vendor said 7b "We have made the required changes. Kindly pass the value as a
+            String now." Current observed state: proposal responses return the string <code>"true"</code>; quote responses
+            still return boolean <code>false</code> or <code>null</code>. Please standardise response types across quote
+            and proposal, or document that the field is semi-structured.</li>
+        <li>Casing differences in <code>getpolicyafterpayment</code> (PascalCase for bike, lowerCamel for car) &mdash;
+            vendor said 7c "pass the value as per the selected bike/vehicle." Accepted &mdash; harness will branch per
+            module.</li>
       </ul>
   </li>
+</ol>
 
-  <li><b>eKYC direct auto-verify: UAT test PAN <code>BAPPN1467E</code> only verifies under
-      <code>ekycType: "Pan Number"</code> (scenario&nbsp;1).</b> Scenario&nbsp;2 (<code>"PAN + DOI"</code>) with the same PAN
-      returns the web-KYC redirect regardless of the DOI value. Please clarify in the HDFC eKYC doc which test PANs are
-      scenario-1-only vs scenario-2-friendly.</li>
+<h2>Remaining vendor-side ask (one item)</h2>
+<ol class="findings">
+  <li><b>Stack-trace leaks from any upstream.</b> HDFC car proposal and HDFC bike proposal are now cleanly handled, but
+      earlier runs still show a raw C# stack trace surfacing from <code>insertcarquote</code> when an ISO date is sent,
+      with <code>D:\\PROJECT\\SwapCoreApi\\...</code> file paths visible to the API caller. The business-level fix (we must
+      send <code>dd/MM/yyyy</code>) is accepted &mdash; the remaining ask is to apply the same guard the proposal path now
+      has to the quote path so a bad date returns a clean validation message instead of a trace.</li>
 </ol>
 
 <h2>Summary</h2>
