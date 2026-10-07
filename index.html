@@ -2592,6 +2592,12 @@ async function fetchQuote(){
     const ij = await ir.json();
     if(!ir.ok || !ij.transId) throw new Error(ij.message || ij.error || `insert failed (${ir.status})`);
     const transId = ij.transId;
+    // Persist the partner transId on the vehicle so the proposal + payment
+    // handoff can reuse it. Without this, buildCarProposalBody /
+    // buildBikeProposalBody read insertBody.quote.quoteId (not set here) and
+    // send transId: "" to HDFC → successFailureURL comes back as
+    // "privateCar/hdfccartransaction?transId=" (empty) and the gateway errors.
+    vehicle._partnerTransId = String(transId);
 
     const gr = await fetch(`${getPath}&insurer=${encodeURIComponent(insurer)}`, {
       method:'POST', headers:{'content-type':'application/json'},
@@ -2669,6 +2675,10 @@ function splitRegistration(reg){
 // journey-state fields as null/blank per the doc's note.
 function buildBikeProposalBody(){
   const insertBody = buildQuoteBody();
+  // The quote path's insertquote returned a partner transId that we persisted
+  // on vehicle._partnerTransId — stamp it onto the quote block so transId /
+  // quoteId / Surl all carry the correct value downstream.
+  if (vehicle._partnerTransId) insertBody.quote.quoteId = String(vehicle._partnerTransId);
   const c = vehicle.customer || {};
   const k = vehicle.kyc || {};
   const kd = k.raw || {};
@@ -2701,12 +2711,16 @@ function buildBikeProposalBody(){
   const nomineeFname = nomineeParts[0] || '';
   const nomineeLname = nomineeParts.slice(1).join(' ') || nomineeParts[0] || '';
 
-  const transId = gj.pTransactionId || String(insertBody.quote.quoteId || '');
+  // Partner transId is authoritative for the proposal's transId/quoteId fields.
+  // pTransactionId (HDFC's own) is reserved for the dedicated pTransactionId field.
+  const partnerTransId = String(vehicle._partnerTransId || insertBody.quote.quoteId || '');
+  const transId = partnerTransId;
+  const pTransactionId = gj.pTransactionId || partnerTransId;
   const isOrg = (c.vehicleOwnedBy==='O');
 
   const proposal = {
     salutation: c.salutation || (isOrg?'M/S':'Mr'),
-    pTransactionId: transId,
+    pTransactionId,
     paymentNumber: null, bankrefnum: null, paymentStatus: null,
     referenceNumber: null, refProposal: null, isAngular: true,
     fullname, firstName, lastName,
@@ -2814,6 +2828,7 @@ function buildBikeProposalBody(){
 // `carAddons` / `carQuoteResponse` (not bikeAddons / quoteResponseBike).
 function buildCarProposalBody(){
   const insertBody = buildQuoteBody();
+  if (vehicle._partnerTransId) insertBody.quote.quoteId = String(vehicle._partnerTransId);
   const c = vehicle.customer || {};
   const k = vehicle.kyc || {};
   const kd = k.raw || {};
@@ -2841,8 +2856,8 @@ function buildCarProposalBody(){
   const nomineeFname = nomineeParts[0] || '';
   const nomineeLname = nomineeParts.slice(1).join(' ') || nomineeParts[0] || '';
 
-  const pTransactionId = gj.pTransactionId || String(insertBody.quote.quoteId || '');
-  const partnerTransId = String(insertBody.quote.quoteId || '');
+  const partnerTransId = String(vehicle._partnerTransId || insertBody.quote.quoteId || '');
+  const pTransactionId = gj.pTransactionId || partnerTransId;
 
   const proposal = {
     salutation: c.salutation || 'Mr',
@@ -3021,8 +3036,8 @@ async function payNow(){
     // Store handoff params for the return page.
     sessionStorage.setItem(PROPOSAL_STATE_KEY, JSON.stringify({
       leadId: currentLeadId(),
-      transId: proposalBody.quote.quoteId,
-      partnerTransId: proposalBody.quote.quoteId,
+      transId: vehicle._partnerTransId || proposalBody.quote.quoteId,
+      partnerTransId: vehicle._partnerTransId || proposalBody.quote.quoteId,
       hdfcTxnId: j.transactionID,
       proposalNo: j.proposalNo || j.statusTransactionID || '',
       amount: j.txnAmount || String(vehicle.price||''),
