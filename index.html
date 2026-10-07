@@ -3133,14 +3133,11 @@ function showCisModal(base64, proposalNo){
 }
 
 // Build and submit an HTML form POST to HDFC's MakePayment.aspx with the
-// exact field names the doc requires. HDFC's `successFailureURL` can come
-// back as a relative path (new 4W doc: "privateCar/hdfccartransaction?...")
-// or as an absolute URL (older bike samples: "http://localhost:46991/..."),
-// but per the HDFC Payment Redirect spec `Surl = domain + successFailureURL`,
-// so for relative values we must prepend our own origin — otherwise HDFC
-// resolves the path against its own host (heapp21.hdfcergo.com) and the
-// return 404s. Our vercel.json rewrites /privateBike/hdfcbiketransaction
-// and /privateCar/hdfccartransaction to /api/payment/callback.
+// exact field names the doc requires. Surl/Furl MUST come from the vendor's
+// response unchanged — HDFC's checksum was computed against those URLs, so
+// overriding them would fail their validation. Simson configures that URL
+// on their side; we handle it via a vercel.json rewrite that maps
+// /privateBike/hdfcbiketransaction -> /api/payment/callback.
 function submitHdfcPaymentForm(resp){
   const form = document.createElement('form');
   form.method = 'POST'; form.action = resp.paymentororkycLink; form.style.display='none';
@@ -3149,16 +3146,12 @@ function submitHdfcPaymentForm(resp){
     i.type='hidden'; i.name=name; i.value = value==null?'':String(value);
     form.appendChild(i);
   };
-  const rawReturn = String(resp.successFailureURL || '');
-  const returnUrl = /^https?:\/\//i.test(rawReturn)
-    ? rawReturn
-    : window.location.origin + '/' + rawReturn.replace(/^\/+/, '');
   addField('Trnsno', resp.transactionID);
   addField('Amt',    resp.txnAmount);
   addField('Appid',  resp.appid);
   addField('Subid',  resp.subid);
-  addField('Surl',   returnUrl);
-  addField('Furl',   returnUrl);
+  addField('Surl',   resp.successFailureURL);
+  addField('Furl',   resp.successFailureURL);
   addField('Src',    'POST');
   addField('Chksum', resp.checkSum);
   document.body.appendChild(form);
