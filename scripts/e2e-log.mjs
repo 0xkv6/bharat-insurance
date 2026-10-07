@@ -981,6 +981,179 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     ms: 0,
   });
 
+  // =====================================================================
+  // == 9. Digit CAR flow — Insert Proposal + Create Proposal (new docs) ==
+  // =====================================================================
+  // Per Digit_Private_Car_Proposal_APIs_Documentation (2026-10-07):
+  //   API 1: POST uatswapapi.pushbutton.in/partner/motor/insertcarproposal (MIALTUS)
+  //   API 2: POST swapinsureruat.getpolicy.in/partner/motor/getcarproposal  (DIGIT)
+  //   API 3: POST /partner/ekyc/getpaymentafterkyc    (after real KYC — can't do headless)
+  //   API 4: POST /partner/motor/getresponseafterpayment  (after real payment — can't do headless)
+  console.log('== 9. Digit CAR Insert Proposal + Create Proposal ==');
+  // MIALTUS insertcarproposal deserializes carQuoteResponse into a strongly
+  // typed C# model. The quote endpoint returns HDFC-superset fields; Digit's
+  // model only accepts the fields in Digit's doc schema, with specific types
+  // (Decimal, string, bool). Build a schema-exact copy pulling our quote's
+  // actual numbers.
+  const _r = digitCarRes.data || {};
+  const num = (k) => Number(_r[k]) || 0;
+  const digitCarQR = {
+    applicationId: null,
+    lLtoEmployee: num('lLtoEmployee'),
+    geogExtensionTPPremium: num('geogExtensionTPPremium'),
+    motorPolicyType: null,
+    // Placeholder — overwritten per endpoint below. The vendor's two
+    // endpoints bind this field to incompatible types (insertcarproposal =
+    // Boolean, getcarproposal = String), so each request body is forked.
+    errorStatus: false,
+    insurer: 'digit',
+    idv: num('idv'),
+    totalpremiumliabillity: num('totalpremiumliabillity'),
+    vehicleOwnedBy: null,
+    quoteId: null,
+    errorText: null,
+    idvRequest: null,
+    idvResponse: null,
+    tppd: num('tppd'),
+    unnamedsi: num('unnamedsi'),
+    baseThirdPartyPremium: num('baseThirdPartyPremium'),
+    paOwnerDriver: num('paOwnerDriver'),
+    paTenure: null,
+    netPremium: num('netPremium'),
+    serviceTax: num('serviceTax'),
+    policystartDate: String(_r.policystartDate || ''),
+    policyEndDate:   String(_r.policyEndDate || ''),
+    payablePremium:  num('payablePremium'),
+    quoteNo: null,
+    modifiedIDV: num('modifiedIDV'),
+    originalIDV: num('originalIDV'),
+    exshowroomPrice: num('exshowroomPrice'),
+    ncbDiscount: num('ncbDiscount'),
+    tpBiFuel: num('tpBiFuel'),
+    paidDriversi: num('paidDriversi'),
+    thirdPartyPremium: num('thirdPartyPremium'),
+    paidDriverPremium: num('paidDriverPremium'),
+    llPaidDriver: num('llPaidDriver'),
+    totalTPCalculated: num('totalTPCalculated'),
+    maxIDV: num('maxIDV'), minIDV: num('minIDV'),
+    cngminIDV: 0, cngmaxIDV: 0, elecminIDV: 0, elecmaxIDV: 0,
+    iscpaCover: null,
+    aaiDiscount: num('aaiDiscount'),
+    coverType: 'TPOnly',
+    termType: null,
+    pTransactionId: String(_r.pTransactionId || ''),
+    cngValue: null, fuel: null, planName: null,
+    userSpecialDiscount: null, fuelType: null,
+  };
+  const digitCarMfg = mfgFromRegDate(carVehicle.regDate);
+  const digitCarReg = String(carVehicle.reg || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const digitCarRegParts = digitCarReg.match(/^([A-Z]{2})(\d{1,2})([A-Z]{1,3})(\d{1,4})$/) || [];
+  const digitCarProposal = {
+    salutation: 'Mr',
+    pTransactionId: digitCarQR.pTransactionId || '',   // Digit's MIALTUS-GUID id
+    firstName: 'AVINASH', lastName: 'PANDEY',
+    dob: toDMY('1990-01-01'),
+    // Digit UAT rejects "9999999999" style sequential mobiles ("Entered
+    // Mobile Number is invalid"). Use the vendor's own sample value.
+    email: 'test@gmail.com', mobile: '9798798797',
+    panCard: KYC_PAN,
+    gender: 'Male',
+    maritialValue: 'Married', maritialText: 'Married',
+    occupationValue: 'Private Service', occupationText: 'Private Service',
+    gstNo: '', adhaarNumber: '',
+    nomineeFname: 'Priya', nomineeLname: 'Singh',
+    nomineeDob: toDMY('1995-06-15'),
+    relationshipValue: 'FATHER', relationshipText: 'FATHER',
+    vehicleOwnedBy: 'I',
+    rto: carVehicle.rto,
+    regA: digitCarRegParts[1] || '', regB: digitCarRegParts[2] || '',
+    regC: digitCarRegParts[3] || '', regD: digitCarRegParts[4] || '',
+    regDate: carVehicle.regDate,
+    engineNo: 'TESTENGINE12345', chassisNo: 'TESTCHASSIS12345',
+    isVehcileFinance: false, financeCity: '',
+    isPuc: false, pucNo: '', pucExpiryDate: null,
+    prevoiusInsurerValue: '123',   // vendor doc sample uses "123" as code
+    prevoiusInsurerText: 'Cholamandalam MS General Insurance',
+    prevoiusPolicyNumber: 'hfhe45uy3h34y34y6',
+    prevoiusPolicyType: 'Comprehensive (Own damage + Third Party Liability)',
+    prevoiusPolicyExpiryDate: CAR_PREV_EXPIRY,
+    policyType: 'renewcar',
+    addrL1: 'DFGDFGDFGF', addrL2: 'GDFGDFGDFGDFGFG', landmark: '',
+    stateName: 'Maharashtra', stateCode: '27',
+    cityName: 'MUMBAI', cityCode: 'MUMBAI',   // Digit uses city name as code
+    pincode: '400001',
+    isSameAddressChecked: true,
+    rcLandmark: '',
+    rcAddrL1: 'DFGDFGDFGF', rcAddrL2: 'GDFGDFGDFGDFGFG',
+    rcStateName: 'Maharashtra', rcStateCode: '27',
+    rcCityName: 'MUMBAI', rcCityCode: 'MUMBAI',
+    rcPincode: '400001',
+    make: carVehicle.make, model: carVehicle.model,
+    variant: carVehicle.variant || '',
+    idv: '0', coverType: 'TPOnly',
+    mfgYear: digitCarMfg.mfgYear, mfgMonth: digitCarMfg.mfgMonth,
+    transId: String(carTransIdDigit || ''),
+    netPremium:     String(digitCarQR.netPremium || ''),
+    payablePremium: String(digitCarQR.payablePremium || ''),
+    serviceTax:     String(digitCarQR.serviceTax || ''),
+    insurerName: 'digit',
+    termsCondition: 'true',
+    polStartDateToSaiba: digitCarQR.policystartDate || '',
+    polEndDateToSaiba:   digitCarQR.policyEndDate || '',
+    seatCapacity: '5',
+    cc: '1198', fuel: 'Petrol',
+  };
+  const digitCarInsertPropBody = {
+    quote: carGetBodyDigit.quote,
+    carQuoteResponse: { ...digitCarQR, errorStatus: false },  // insertcarproposal wants Bool
+    carAddons: carGetBodyDigit.carAddons,
+    proposal: digitCarProposal,
+    carProposal: digitCarProposal,
+  };
+  const digitInsertCarPropRes = await call('CAR — Proposal (Digit)', 'insertcarproposal (MIALTUS)', `${MIALTUS_BASE}/partner/motor/insertcarproposal`, {
+    headers: {
+      'Content-Type': 'application/json', 'accept': '*/*',
+      'ClientName': CLIENT, 'Server': 'UAT',
+      'Authorization': `Bearer ${mialtusTok}`,
+    },
+    body: digitCarInsertPropBody,
+  });
+  console.log('   Digit insertcarproposal →',
+    typeof digitInsertCarPropRes.data === 'object' ? JSON.stringify(digitInsertCarPropRes.data).slice(0, 300) : String(digitInsertCarPropRes.data).slice(0, 300));
+
+  // Vendor's getcarproposal validator demands `carProposal` key even though
+  // the doc sample uses `proposal`. Send both — same workaround we used for
+  // the HDFC bike proposal before they fixed it.
+  const digitCreateProposal = {
+    ...digitCarProposal,
+    callbackurl: 'https://www.bharatinsurance.online/digit/kyc-return',
+  };
+  const digitCarCreatePropBody = {
+    ...digitCarInsertPropBody,
+    carQuoteResponse: { ...digitCarQR, errorStatus: '' },      // getcarproposal wants String
+    proposal: digitCreateProposal,
+    carProposal: digitCreateProposal,
+  };
+  const digitCreateCarPropRes = await call('CAR — Proposal (Digit)', 'getcarproposal (DIGIT)', `${SWAPINS_BASE}/partner/motor/getcarproposal`, {
+    headers: {
+      'Content-Type': 'application/json', 'accept': '*/*',
+      'ClientName': CLIENT, 'Server': 'UAT', 'Insurer': 'DIGIT',
+      'Authorization': `Bearer ${swapTok}`,
+    },
+    body: digitCarCreatePropBody,
+  });
+  console.log('   Digit getcarproposal →',
+    typeof digitCreateCarPropRes.data === 'object' ? JSON.stringify(digitCreateCarPropRes.data).slice(0, 400) : String(digitCreateCarPropRes.data).slice(0, 400));
+
+  log.push({
+    section: 'CAR — Payment / Issuance (Digit)',
+    step: 'Customer completes KYC → getpaymentafterkyc → payment → getresponseafterpayment',
+    note: 'Headless harness stops at the Create Proposal response (KYC link). Steps 3–4 require a real browser KYC + payment.',
+    req: { url: `${SWAPINS_BASE}/partner/ekyc/getpaymentafterkyc then ${SWAPINS_BASE}/partner/motor/getresponseafterpayment`, method: 'POST', body: '{ enquiryID, applicationId, refProposal, module:"Car", transId, callbackurl }' },
+    res: { status: 0, ok: false, body: 'Awaits real KYC completion on the Digit portal returned by getcarproposal.' },
+    ms: 0,
+  });
+
   console.log('\nWriting report…');
   writeFileSync(join(ROOT, 'vendor-e2e-log.html'), renderHtml(log), 'utf8');
   console.log('Wrote vendor-e2e-log.html');
@@ -1101,31 +1274,39 @@ function renderHtml(log) {
     }
     return { cls: 'err', text: `HTTP ${e.res.status}` };
   };
-  const classifyProposal = (step) => {
-    const e = log.find(x => new RegExp(step, 'i').test(x.step));
+  const classifyProposal = (stepPat) => {
+    // Match a specific step entry (e.g. "getcarproposal (HDFC)" or
+    // "getcarproposal (DIGIT)" — vendor is HDFC proposal flow vs Digit flow).
+    const e = log.find(x => new RegExp(stepPat, 'i').test(x.step));
     if (!e || !e.res || !e.res.body) return { cls: 'skip', text: 'not run' };
     const b = e.res.body;
+    // HDFC success: proposalNo populated. Digit success: enquiryID + refProposal
+    // + paymentororkycLink populated (Digit returns a KYC link, not a proposalNo).
     if (b.proposalNo) return { cls: 'ok', text: `SUCCESS · proposalNo ${b.proposalNo}` };
+    if (b.paymentororkycLink && b.refProposal) {
+      return { cls: 'ok', text: `SUCCESS · refProposal ${b.refProposal} · KYC link OK` };
+    }
     if (b.errorMessage) {
-      const msg = String(b.errorMessage).split(/[\n\r]/)[0].slice(0, 120);
-      // Clean business error (vendor caught it) vs raw stack trace (vendor bug).
+      const msg = String(b.errorMessage).replace(/[\r\n\\]+/g, ' ').split('"').join('').trim().slice(0, 120);
       const isStack = /Message is:-|StackTrace is:-/i.test(String(b.errorMessage));
       return { cls: isStack ? 'err' : 'warn', text: `${isStack ? 'VENDOR EXCEPTION' : 'BLOCKED'} · ${msg}` };
     }
     return { cls: 'err', text: `HTTP ${e.res.status}` };
   };
-  const carProposal  = classifyProposal('getcarproposal');
-  const bikeProposal = classifyProposal('getbikeproposal');
+  const carProposalHdfc  = classifyProposal('getcarproposal \\(HDFC\\b');
+  const bikeProposalHdfc = classifyProposal('getbikeproposal \\(HDFC\\b');
+  const carProposalDigit = classifyProposal('getcarproposal \\(DIGIT\\b');
   const cell = (title, r) => `<div class="cell ${r.cls}"><div class="cell-title">${title}</div><div class="cell-text">${esc(r.text)}</div></div>`;
   const matrixHtml = `
     <div class="matrix">
       ${cell('Car · Quote · HDFC ERGO (HDFCTP)', findQuote('car', 'HDFCTP'))}
       ${cell('Car · Quote · Digit (GODIGITTP)',  findQuote('car', 'GODIGITTP'))}
-      ${cell('Car · Proposal · HDFC',             carProposal)}
+      ${cell('Car · Proposal · HDFC',             carProposalHdfc)}
+      ${cell('Car · Proposal · Digit',            carProposalDigit)}
       ${cell('Bike · Quote · HDFC ERGO (HDFCTP)', findQuote('bike', 'HDFCTP'))}
       ${cell('Bike · Quote · Digit (GODIGITTP)',  findQuote('bike', 'GODIGITTP'))}
-      ${cell('Bike · Proposal · HDFC',            bikeProposal)}
-      ${cell('Payment · Issuance · PDF',  { cls: 'skip', text: 'not executable headless — insurer-hosted gateway (QA Q9/Q10/D1)' })}
+      ${cell('Bike · Proposal · HDFC',            bikeProposalHdfc)}
+      ${cell('Payment · Issuance · PDF',  { cls: 'skip', text: 'not executable headless — insurer-hosted gateway' })}
     </div>`;
   const sectionHtml = [...sections.entries()].map(([name, entries]) => `
     <section class="flowsection">
