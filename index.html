@@ -3003,9 +3003,12 @@ async function payNow(){
       body: JSON.stringify(proposalBody),
     });
     const j = await r.json();
-    // Proposal API returns errorStatus as boolean, null, or stringified "true"
-    // depending on the path. Treat all truthy string/boolean variants as a failure.
-    const propErr = j.errorStatus === true || (typeof j.errorStatus === 'string' && j.errorStatus.toLowerCase() === 'true');
+    // Vendor contract (Mialtus_Client_QA follow-up): errorStatus is null on
+    // success; any string value signals an actual validation / processing
+    // error (e.g. "true", "Premium Mismatch", etc.). Treat boolean true OR
+    // any non-empty string as a failure.
+    const propErr = j.errorStatus === true
+      || (typeof j.errorStatus === 'string' && j.errorStatus.trim() !== '');
     if(!r.ok || propErr){
       throw new Error(j.errorMessage || j.error || `Proposal failed (${r.status})`);
     }
