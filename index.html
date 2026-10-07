@@ -2934,17 +2934,244 @@ function buildCarProposalBody(){
   };
 }
 
+// ---------- Digit proposal builders ----------
+// Per Digit_Private_Car_Proposal_APIs_Documentation and
+// Bike_Proposal_APIs_Documentation_Digit (2026-10-07). Digit's proposal is
+// leaner than HDFC's (no CPA/photo/journey-state fields). Two vendor quirks
+// to work around:
+//   1. carQuoteResponse.errorStatus is Boolean for insertcarproposal and
+//      String for getcarproposal — same field, two body shapes. We emit both
+//      copies and let the proxy choose per endpoint.
+//   2. getcarproposal / getbikeproposal validators require a `carProposal` /
+//      `bikeProposal` key even though the docs show only `proposal`. We send
+//      both keys as the frontend currently does for HDFC bike.
+
+// Build a schema-exact Digit carQuoteResponse by mapping our actual quote
+// numbers into the exact field set Digit's binder expects. HDFC-superset
+// fields that would deserialize to Decimal must be absent or 0; string-typed
+// fields must be string-or-null.
+function toDigitCarQuoteResponse(raw, errorStatusType /* 'bool' | 'string' */){
+  const num = (k) => Number(raw && raw[k]) || 0;
+  const es  = errorStatusType === 'string' ? '' : false;
+  return {
+    applicationId: null,
+    lLtoEmployee: num('lLtoEmployee'),
+    geogExtensionTPPremium: num('geogExtensionTPPremium'),
+    motorPolicyType: null,
+    errorStatus: es,
+    insurer: 'digit',
+    idv: num('idv'),
+    totalpremiumliabillity: num('totalpremiumliabillity'),
+    vehicleOwnedBy: null, quoteId: null, errorText: null,
+    idvRequest: null, idvResponse: null,
+    tppd: num('tppd'), unnamedsi: num('unnamedsi'),
+    baseThirdPartyPremium: num('baseThirdPartyPremium'),
+    paOwnerDriver: num('paOwnerDriver'),
+    paTenure: null,
+    netPremium: num('netPremium'),
+    serviceTax: num('serviceTax'),
+    policystartDate: String((raw && raw.policystartDate) || ''),
+    policyEndDate:   String((raw && raw.policyEndDate) || ''),
+    payablePremium:  num('payablePremium'),
+    quoteNo: null,
+    modifiedIDV: num('modifiedIDV'), originalIDV: num('originalIDV'),
+    exshowroomPrice: num('exshowroomPrice'),
+    ncbDiscount: num('ncbDiscount'),
+    tpBiFuel: num('tpBiFuel'),
+    paidDriversi: num('paidDriversi'),
+    thirdPartyPremium: num('thirdPartyPremium'),
+    paidDriverPremium: num('paidDriverPremium'),
+    llPaidDriver: num('llPaidDriver'),
+    totalTPCalculated: num('totalTPCalculated'),
+    maxIDV: num('maxIDV'), minIDV: num('minIDV'),
+    cngminIDV: 0, cngmaxIDV: 0, elecminIDV: 0, elecmaxIDV: 0,
+    iscpaCover: null,
+    aaiDiscount: num('aaiDiscount'),
+    coverType: 'TPOnly', termType: null,
+    pTransactionId: String((raw && raw.pTransactionId) || ''),
+    cngValue: null, fuel: null, planName: null,
+    userSpecialDiscount: null, fuelType: null,
+  };
+}
+
+// Schema-exact Digit bike quoteResponseBike (bike doc §quoteResponseBike).
+function toDigitBikeQuoteResponse(raw, errorStatusType){
+  const num = (k) => Number(raw && raw[k]) || 0;
+  const es  = errorStatusType === 'string' ? '' : false;
+  return {
+    applicationId: null, currentNCB: null, insurer: 'digit',
+    policystartDate: String((raw && raw.policystartDate) || ''),
+    policyEndDate:   String((raw && raw.policyEndDate) || ''),
+    errorStatus: es, errorText: null,
+    idvRequest: null, idvResponse: null,
+    tppd: num('tppd'),
+    baseThirdPartyPremium: num('baseThirdPartyPremium'),
+    paOwnerDriver: num('paOwnerDriver'),
+    netPremium: num('netPremium'),
+    serviceTax: num('serviceTax'),
+    payablePremium: num('payablePremium'),
+    quoteNo: null,
+    tpBiFuel: num('tpBiFuel'),
+    personalaccident: num('personalaccident'),
+    paidDriversi: num('paidDriversi'),
+    llPaidDriver: num('llPaidDriver'),
+    llEmployee: num('llEmployee'),
+    totalTPCalculated: num('totalTPCalculated'),
+    coverType: null, termType: 'TPOnly',
+    pTransactionId: String((raw && raw.pTransactionId) || ''),
+    thirdPartyPremium: num('thirdPartyPremium'),
+    paidDriverPremium: num('paidDriverPremium'),
+    userSpecialDiscount: null,
+    geogExtensionTPPremium: num('geogExtensionTPPremium'),
+  };
+}
+
+// Build the shared Digit proposer/vehicle/address/premium block, used by
+// both car and bike (fields are identical modulo coverType).
+function buildDigitProposalCore(isBike){
+  const c = vehicle.customer || {};
+  const k = vehicle.kyc || {};
+  const kd = k.raw || {};
+  const nominee = c.nominee || {};
+  const addr = c.address || {};
+  const gj = vehicle._quoteResponse || {};
+  const { regA, regB, regC, regD } = splitRegistration(vehicle.reg);
+
+  // Digit UAT rejects some obviously-synthetic mobile patterns ("Entered
+  // Mobile Number is invalid"). Use what the customer typed as-is; the pay
+  // step already validates /^[6-9]\d{9}$/.
+  const fullname  = k.fullName || c.fullname || '';
+  const nameParts = fullname.trim().split(/\s+/);
+  const firstName = nameParts[0] || '';
+  const lastName  = nameParts.slice(1).join(' ') || nameParts[0] || '';
+  const dob = k.dob || '';
+  const pan = k.pan || '';
+  const pm = (vehicle.kyc && vehicle.kyc.pincodeMaster) || {};
+  const stateName = pm.stateName || addr.state || '';
+  const stateCode = pm.stateCode || '';
+  // Digit samples put the city name in cityCode too (not a numeric code).
+  const cityName  = (pm.cityName || kd.permanentCity || addr.city || '').toUpperCase();
+  const cityCode  = cityName;
+  const pincode   = String(kd.permanentPincode || addr.pincode || '');
+  const addrL1    = kd.permanentAddress1 || addr.line || '';
+  const addrL2    = kd.permanentAddress2 || '';
+  const nomineeParts = String(nominee.name||'').trim().split(/\s+/);
+  const nomineeFname = nomineeParts[0] || '';
+  const nomineeLname = nomineeParts.slice(1).join(' ') || nomineeParts[0] || '';
+  const pTransactionId = gj.pTransactionId || '';   // Digit's MIALTUS-GUID id
+  const partnerTransId = String(vehicle._partnerTransId || '');
+  const variantStr = vehicle.variantHint || vehicle.variant || '';
+  const ccMatch = String(variantStr).match(/\((\d+)\s*CC\)/i);
+  const cc = ccMatch ? ccMatch[1] : '';
+
+  return {
+    salutation: c.salutation || 'Mr',
+    pTransactionId,
+    firstName, lastName,
+    dob,
+    email: (c.email||'').toUpperCase(),
+    mobile: c.mobile || '',
+    panCard: pan,
+    gender: c.gender || 'Male',
+    maritialValue: c.maritalValue || 'Single', maritialText: c.maritalText || 'Single',
+    occupationValue: c.occupation || 'Private Service',
+    occupationText:  c.occupationText || c.occupation || 'Private Service',
+    gstNo: '', adhaarNumber: '',
+    nomineeFname, nomineeLname,
+    nomineeDob: nominee.dob || '',
+    relationshipValue: (nominee.relation || '').toUpperCase() || 'DAUGHTER',
+    relationshipText:  (nominee.relationText || nominee.relation || '').toUpperCase() || 'DAUGHTER',
+    vehicleOwnedBy: c.vehicleOwnedBy || 'I',
+    rto: vehicle.rto || '',
+    regA, regB, regC, regD,
+    regDate: c.regDate || '',
+    engineNo: c.engineNo || '',
+    chassisNo: c.chassisNo || '',
+    isVehcileFinance: !!c.hypothecated,
+    financeCity: '',
+    isPuc: !!c.hasPuc, pucNo: c.pucNo || '', pucExpiryDate: c.pucExpiryDate || null,
+    prevoiusInsurerValue: c.validPolCopy==='Yes' ? '123' : '',   // Digit sample uses "123" as a stub insurer code
+    prevoiusInsurerText:  c.validPolCopy==='Yes' ? (vehicle.previousInsurer || '') : '',
+    prevoiusPolicyNumber: c.previousPolicyNumber || '',
+    prevoiusPolicyType:   c.previousYearPolicyType || '',
+    prevoiusPolicyExpiryDate: c.prepolExpiryDate || '',
+    policyType: isBike ? 'renew' : 'renewcar',
+    addrL1, addrL2, landmark: '',
+    stateName, stateCode, cityName, cityCode, pincode,
+    isSameAddressChecked: true,
+    rcLandmark: '', rcAddrL1: addrL1, rcAddrL2: addrL2,
+    rcStateName: stateName, rcStateCode: stateCode,
+    rcCityName: cityName,   rcCityCode: cityCode,
+    rcPincode: pincode,
+    make: vehicle.make || '', model: vehicle.model || '',
+    variant: variantStr,
+    idv: '0',
+    coverType: isBike ? 'tponly' : 'TPOnly',
+    mfgYear: c.mfgYear || '', mfgMonth: c.mfgMonth || '',
+    transId: partnerTransId,
+    netPremium:     String(gj.netPremium || ''),
+    payablePremium: String(gj.payablePremium || vehicle.price || ''),
+    serviceTax:     String(gj.serviceTax || ''),
+    insurerName: 'digit',
+    termsCondition: 'true',
+    polStartDateToSaiba: gj.policystartDate || '',
+    polEndDateToSaiba:   gj.policyEndDate || '',
+    seatCapacity: isBike ? '' : String(pickSeatCapacity() || '5'),
+    cc: isBike ? variantStr : (cc || ''),
+    fuel: 'Petrol',
+  };
+}
+
+function buildDigitCarProposalBody(opts){
+  const insertBody = buildQuoteBody();
+  if (vehicle._partnerTransId) insertBody.quote.quoteId = String(vehicle._partnerTransId);
+  const errorStatusType = (opts && opts.errorStatusType) || 'bool';
+  const proposal = buildDigitProposalCore(false);
+  // Create Proposal (API 2) adds callbackurl; Insert Proposal (API 1) omits it.
+  if (opts && opts.callbackurl) proposal.callbackurl = opts.callbackurl;
+  // Dual-key the proposal to satisfy the vendor's `carProposal field required`
+  // validator — same workaround we used for HDFC bike until vendor fixed it.
+  return {
+    quote: insertBody.quote,
+    carQuoteResponse: toDigitCarQuoteResponse(vehicle._quoteResponse || {}, errorStatusType),
+    carAddons: insertBody.carAddons,
+    proposal,
+    carProposal: proposal,
+  };
+}
+
+function buildDigitBikeProposalBody(opts){
+  const insertBody = buildQuoteBody();
+  if (vehicle._partnerTransId) insertBody.quote.quoteId = String(vehicle._partnerTransId);
+  const errorStatusType = (opts && opts.errorStatusType) || 'bool';
+  const proposal = buildDigitProposalCore(true);
+  if (opts && opts.callbackurl) proposal.callbackurl = opts.callbackurl;
+  return {
+    quote: insertBody.quote,
+    bikeAddons: insertBody.bikeAddons,
+    quoteResponseBike: toDigitBikeQuoteResponse(vehicle._quoteResponse || {}, errorStatusType),
+    proposal,
+    bikeProposal: proposal,
+  };
+}
+
 // Session storage key for the proposal handoff params + partner transId,
 // so /payment/return.html can pick them up after the HDFC gateway round-trip.
 const PROPOSAL_STATE_KEY = 'bi:proposal:hdfc';
 
 // HDFC's quote + proposal + payment flow is wired for both 2W and 4W (per the
-// HDFC Two-Wheeler and Four-Wheeler API docs). Digit's proposal/issuance isn't
-// documented yet, so Digit still routes through the "coming soon" placeholder.
+// HDFC Two-Wheeler and Four-Wheeler API docs).
 function goingToPayHdfc(){
   const line = vehicle.line;
   const code = vehicle.insurerCode || 'HDFCTP';
   return (line==='Two-Wheeler' || line==='Car') && code==='HDFCTP';
+}
+// Digit's quote + proposal + payment flow is wired for both 2W and 4W (per
+// the Digit Private Car and Two-Wheeler Proposal docs from 2026-10-07).
+function goingToPayDigit(){
+  const line = vehicle.line;
+  const code = vehicle.insurerCode || '';
+  return (line==='Two-Wheeler' || line==='Car') && code==='GODIGITTP';
 }
 
 // Vendor Q9: use the KYC pincode to look up the correct state/city from the
@@ -2981,18 +3208,26 @@ async function payNow(){
   say('mobErr','Your e-policy arrives here on WhatsApp and SMS.');
   const btn=document.getElementById('payBtn');
 
-  // HDFC car + bike are both wired to proposal + CIS + payment. Digit-bike
-  // and other combinations don't have vendor-documented issuance yet, so they
-  // fall through to the manual-follow-up placeholder.
+  // Dispatch by insurer: HDFC and Digit each have a documented end-to-end
+  // flow; other combinations (e.g. Commercial) still fall through to the
+  // manual-follow-up placeholder.
+  if (goingToPayDigit()) {
+    try { await startDigitProposalFlow(mobile); }
+    catch (err) {
+      btn.classList.remove('paying');btn.innerHTML='Pay securely <svg class="i"><use href="#i-arrow"/></svg>';
+      trackLead('proposal_failed', {insurer:'DIGIT', reason: String(err.message||err)});
+      say('mobErr','Could not initiate Digit payment: '+String(err.message||err), true);
+    }
+    return;
+  }
   if(!goingToPayHdfc()){
     btn.classList.add('paying');btn.innerHTML='Preparing…';
     setTimeout(()=>{
       btn.classList.remove('paying');btn.innerHTML='Pay securely <svg class="i"><use href="#i-arrow"/></svg>';
-      const which = vehicle.line==='Two-Wheeler' ? 'Digit two-wheeler' : (vehicle.line==='Car'?'Digit private car':'Commercial vehicle');
+      const which = vehicle.line==='Commercial' ? 'commercial vehicle' : (vehicle.line||'this vehicle').toLowerCase();
       document.getElementById('doneMsg').innerHTML =
         `<b>Instant issuance for ${which} is coming soon.</b><br>`+
-        `Our team will contact you on <b>+91 ${mobile}</b> to complete this purchase manually.<br>`+
-        `Meanwhile, please switch to HDFC ERGO on the Price step for instant policy issuance.`;
+        `Our team will contact you on <b>+91 ${mobile}</b> to complete this purchase manually.`;
       trackLead('pay_manual_followup');
       resetLeadId();
       goFlow(7);
@@ -3165,6 +3400,94 @@ function submitHdfcPaymentForm(resp){
   addField('Chksum', resp.checkSum);
   document.body.appendChild(form);
   form.submit();
+}
+
+// ---------- Digit proposal + KYC + payment flow ----------
+// Per Digit_Private_Car_Proposal_APIs_Documentation / Bike_Proposal_APIs_
+// Documentation_Digit (2026-10-07). Three browser-visible steps:
+//   1. Insert Proposal (MIALTUS)  → saves the proposal
+//   2. Create Proposal (DIGIT)    → returns a KYC URL (paymentororkycLink)
+//   3. Redirect to KYC URL        → customer completes KYC on Digit's portal
+// Digit then redirects back to our callbackurl (/digit/kyc-return?transId=X).
+// The return handler in payment/return.html picks up the sessionStorage state
+// and calls Payment-After-KYC → payment redirect → Response-After-Payment.
+const DIGIT_KYC_RETURN_PATH     = '/digit/kyc-return';
+const DIGIT_PAYMENT_RETURN_PATH = '/digit/payment-return';
+async function startDigitProposalFlow(mobile){
+  const btn = document.getElementById('payBtn');
+  const isBike = vehicle.line === 'Two-Wheeler';
+  const module = isBike ? 'bike' : 'car';
+  const typeQs = isBike ? 'bike' : 'car';
+  btn.classList.add('paying'); btn.innerHTML='Preparing your proposal…';
+  trackLead('pay_initiated', {insurer:'DIGIT'});
+
+  // Resolve state/city from the KYC pincode (same pre-step as HDFC).
+  await enrichAddressFromKycPincode();
+
+  // --- API 1: Insert Proposal (MIALTUS). errorStatus must be Boolean here. ---
+  const insertBody = isBike
+    ? buildDigitBikeProposalBody({ errorStatusType: 'bool' })
+    : buildDigitCarProposalBody({ errorStatusType: 'bool' });
+  btn.innerHTML='Saving proposal…';
+  const ir = await fetch(`/api/mialtus/insert-proposal?type=${typeQs}`, {
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify(insertBody),
+  });
+  const ij = await ir.json();
+  if (!ir.ok) throw new Error('Insert Proposal failed: ' + (ij.message || ij.error || `HTTP ${ir.status}`));
+  if (String(ij.status) !== '1' && !ij.transID) {
+    throw new Error('Insert Proposal rejected: ' + (ij.message || JSON.stringify(ij).slice(0, 200)));
+  }
+
+  // --- API 2: Create Proposal (DIGIT). errorStatus must be String here. ---
+  // Add the callback URL Digit will redirect to after KYC completion.
+  const callbackurl = window.location.origin + DIGIT_KYC_RETURN_PATH;
+  const createBody = isBike
+    ? buildDigitBikeProposalBody({ errorStatusType: 'string', callbackurl })
+    : buildDigitCarProposalBody({ errorStatusType: 'string', callbackurl });
+  btn.innerHTML='Submitting to Digit…';
+  const cr = await fetch(`/api/swapinsurer/${typeQs}-proposal?insurer=DIGIT`, {
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify(createBody),
+  });
+  const cj = await cr.json();
+  if (!cr.ok) throw new Error('Create Proposal failed: ' + (cj.error || cj.errorMessage || `HTTP ${cr.status}`));
+  // Vendor contract: errorMessage populated OR errorStatus string-truthy ⇒ failure.
+  const createErr = (cj.errorMessage && String(cj.errorMessage).trim())
+    || (typeof cj.errorStatus === 'string' && cj.errorStatus.trim() && cj.errorStatus !== '');
+  if (createErr) {
+    throw new Error('Digit proposal rejected: ' + String(createErr).replace(/[\r\n\\]+/g,' ').replace(/"/g,'').trim());
+  }
+  if (!cj.paymentororkycLink || !cj.enquiryID || !cj.refProposal) {
+    // The vendor returned 200 but omitted the KYC link / IDs. Known Digit UAT
+    // quirk: "Kyc Link is Empty" — flagged with the vendor; see pending ask.
+    throw new Error('Digit accepted the proposal but did not return a KYC link. Please retry in a moment or switch to HDFC ERGO.');
+  }
+
+  // Persist the handoff for the two return stages.
+  sessionStorage.setItem(PROPOSAL_STATE_KEY, JSON.stringify({
+    leadId: currentLeadId(),
+    stage: 'digit-kyc-pending',
+    insurerCode: 'GODIGITTP',
+    insurerLabel: 'Digit',
+    module,
+    partnerTransId: vehicle._partnerTransId || insertBody.quote.quoteId,
+    transId: vehicle._partnerTransId || insertBody.quote.quoteId,
+    enquiryID: cj.enquiryID,
+    applicationId: cj.applicationId,
+    refProposal: cj.refProposal,
+    paymentororkycLink: cj.paymentororkycLink,
+    amount: String(vehicle.price || ''),
+    kycCallbackUrl: callbackurl,
+    paymentCallbackUrl: window.location.origin + DIGIT_PAYMENT_RETURN_PATH,
+    vehicle: { reg: vehicle.reg, make: vehicle.make, model: vehicle.model, variant: vehicle.variant, line: vehicle.line },
+    customer: { mobile, fullname: (vehicle.kyc&&vehicle.kyc.fullName)||(vehicle.customer&&vehicle.customer.fullname)||'' },
+  }));
+
+  trackLead('proposal_created', {insurer:'DIGIT', refProposal: cj.refProposal, enquiryID: cj.enquiryID});
+  btn.innerHTML='Opening Digit KYC…';
+  // Top-level navigation — Digit's portal cannot be embedded in an iframe.
+  window.location.href = cj.paymentororkycLink;
 }
 
 // Enter advances the flow

@@ -328,7 +328,131 @@ dd{margin:0;color:#1a1a2e;font-weight:700;text-align:right;word-break:break-all;
     try { sessionStorage.removeItem(PROPOSAL_STATE_KEY); } catch {}
   }
 
+  // ---------- Digit flow (two return stages) ----------
+  // Stage 1: /digit/kyc-return — customer finished KYC on Digit's portal.
+  //   Call /partner/ekyc/getpaymentafterkyc, redirect to the Digit payment URL.
+  // Stage 2: /digit/payment-return — customer finished payment on Digit's gateway.
+  //   Call /partner/motor/getresponseafterpayment (car) or
+  //        /partner/policygenerate/getpolicyafterpayment (bike), then PDF.
+  function moduleTitle(m){ const s=String(m||'car'); return s.charAt(0).toUpperCase()+s.slice(1); }
+  async function runDigitKycReturn(saved){
+    renderSpinner('KYC complete — requesting your Digit payment link…');
+    const r = await fetch('/api/swapinsurer/ekyc?op=payment-after-kyc', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        paymentororkycLink: saved.paymentororkycLink,
+        insurerName: saved.insurerLabel || 'Digit',
+        errorStatus: '', errorMessage: null,
+        enquiryID: saved.enquiryID,
+        applicationId: saved.applicationId,
+        refProposal: saved.refProposal,
+        module: moduleTitle(saved.module),
+        transId: saved.partnerTransId || saved.transId,
+        callbackurl: saved.paymentCallbackUrl,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `payment-after-kyc HTTP ${r.status}`);
+    if (j.errorMessage && String(j.errorMessage).trim()) throw new Error(String(j.errorMessage).trim());
+    if (!j.paymentLink) throw new Error('Digit did not return a payment link');
+    // Advance stage + redirect
+    saved.stage = 'digit-payment-pending';
+    saved.digitPaymentId = j.digitPaymentId || '';
+    sessionStorage.setItem(PROPOSAL_STATE_KEY, JSON.stringify(saved));
+    trackLead('digit_payment_link', {applicationId: saved.applicationId});
+    renderSpinner('Opening Digit payment page…');
+    window.location.href = j.paymentLink;
+  }
+  async function runDigitPaymentReturn(saved){
+    renderSpinner('Payment received — generating your policy…');
+    const module = (saved.module || 'car').toLowerCase();
+    const r = await fetch('/api/swapinsurer/policy-after-payment?insurer=DIGIT&module='+module, {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        paramater: {
+          paymentororkycLink: saved.paymentororkycLink,
+          insurerName: 'Digit',
+          errorStatus: '', errorMessage: null,
+          enquiryID: saved.enquiryID,
+          applicationId: saved.applicationId,
+          refProposal: saved.refProposal,
+          module: moduleTitle(saved.module),
+          transId: saved.partnerTransId || saved.transId,
+          callbackurl: saved.paymentCallbackUrl,
+        },
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `getresponseafterpayment HTTP ${r.status}`);
+    if (j.errorMessage && String(j.errorMessage).trim()) throw new Error(String(j.errorMessage).trim());
+    // Digit uses refProposal as the policy number when policyNumber isn't echoed at top-level.
+    const policyNumber = j.policyNumber || j.policy_No || saved.refProposal || '';
+    if (!policyNumber) throw new Error('Policy status returned but no policy number present');
+    // Fetch PDF (non-fatal).
+    let pdfBase64 = '';
+    try {
+      const pr = await fetch('/api/swapinsurer/policy-pdf', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({
+          PolicyNo: policyNumber,
+          Module: module,
+          RefNo: saved.applicationId,  // Digit: RefNo = applicationId (not proposalNo)
+          Transid: saved.partnerTransId || saved.transId,
+        }),
+      });
+      const pj = await pr.json();
+      if (pr.ok && !pj.errorStatus) pdfBase64 = pj.pdfBytes || '';
+    } catch {}
+    trackLead('issued', {
+      insurer: 'DIGIT', policyNo: policyNumber,
+      refProposal: saved.refProposal, applicationId: saved.applicationId,
+      premium: Number(saved.amount||0),
+    });
+    renderSuccess(policyNumber, {
+      'Partner transId': saved.partnerTransId,
+      'Insurer': 'Digit',
+      'Proposal ref': saved.refProposal,
+      'Amount': saved.amount ? '₹' + Number(saved.amount).toLocaleString('en-IN') : '',
+    }, pdfBase64);
+    try { sessionStorage.removeItem(PROPOSAL_STATE_KEY); } catch {}
+  }
+
   (async function main(){
+    // Digit two-stage return — the vercel.json rewrites preserve the browser
+    // URL (/digit/kyc-return or /digit/payment-return), so pathname + the
+    // saved stage tell us which step we're on.
+    const path = String(location.pathname || '');
+    const isDigitKycReturn     = path === '/digit/kyc-return';
+    const isDigitPaymentReturn = path === '/digit/payment-return';
+    if (isDigitKycReturn || isDigitPaymentReturn) {
+      let saved = null;
+      try { saved = JSON.parse(sessionStorage.getItem(PROPOSAL_STATE_KEY) || 'null'); } catch {}
+      if (!saved) {
+        renderFailure(
+          'Session expired',
+          'Your proposal state was lost. Please head back to the home page and start a fresh quote.',
+          { 'Note': 'This usually happens when the return opens in a new browser or private window.' },
+        );
+        return;
+      }
+      try {
+        if (isDigitKycReturn) await runDigitKycReturn(saved);
+        else                   await runDigitPaymentReturn(saved);
+      } catch (e) {
+        trackLead(isDigitKycReturn ? 'digit_kyc_return_failed' : 'digit_issuance_failed', {reason: String(e.message||e)});
+        renderFailure(
+          isDigitKycReturn ? 'Could not fetch Digit payment link' : 'Policy issuance failed',
+          String(e.message || e),
+          {
+            'Partner transId': saved.partnerTransId,
+            'Enquiry ID': saved.enquiryID,
+            'Proposal ref': saved.refProposal,
+          },
+        );
+      }
+      return;
+    }
+
     // Very quick optimistic classification from URL params — if the callback
     // already flagged failure we don't need to wait.
     if (urlStatus === 'failure' || urlStatus === 'cancelled') {

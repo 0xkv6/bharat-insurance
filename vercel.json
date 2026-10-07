@@ -12,6 +12,8 @@
   ],
   "rewrites": [
     { "source": "/privateBike/hdfcbiketransaction", "destination": "/api/payment/callback" },
-    { "source": "/privateCar/hdfccartransaction",   "destination": "/api/payment/callback" }
+    { "source": "/privateCar/hdfccartransaction",   "destination": "/api/payment/callback" },
+    { "source": "/digit/kyc-return",      "destination": "/payment/return.html" },
+    { "source": "/digit/payment-return",  "destination": "/payment/return.html" }
   ]
 }
