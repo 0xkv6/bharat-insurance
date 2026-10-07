@@ -3134,10 +3134,19 @@ function showCisModal(base64, proposalNo){
 
 // Build and submit an HTML form POST to HDFC's MakePayment.aspx with the
 // exact field names the doc requires. Surl/Furl MUST come from the vendor's
-// response unchanged — HDFC's checksum was computed against those URLs, so
-// overriding them would fail their validation. Simson configures that URL
-// on their side; we handle it via a vercel.json rewrite that maps
-// /privateBike/hdfcbiketransaction -> /api/payment/callback.
+// response unchanged — verified by direct probing on 2026-10-07:
+//   Surl = "privateCar/hdfccartransaction?transId=X"              → 200 OK
+//   Surl = "http://localhost:46991/privateCar/..." (doc sample)   → 302 Internal Error
+//   Surl = "https://www.bharatinsurance.online/privateCar/..."    → 302 Internal Error
+// HDFC's checksum is computed server-side against the exact successFailureURL
+// string, so any client-side modification breaks validation. Vendor-side
+// blocker for the return redirect: today HDFC resolves the bare path against
+// its own host (heapp21.hdfcergo.com) → 404. The vendor needs to either
+// configure our domain as the merchant base URL at HDFC or return an absolute
+// successFailureURL whose checksum includes our domain.
+// Our vercel.json rewrites /privateBike/hdfcbiketransaction and
+// /privateCar/hdfccartransaction → /api/payment/callback — once the vendor
+// returns an absolute Surl that matches the checksum, the flow completes.
 function submitHdfcPaymentForm(resp){
   const form = document.createElement('form');
   form.method = 'POST'; form.action = resp.paymentororkycLink; form.style.display='none';
