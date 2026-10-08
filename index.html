@@ -3441,27 +3441,44 @@ async function startDigitProposalFlow(mobile){
 
   // --- API 2: Create Proposal (DIGIT). errorStatus must be String here. ---
   // Add the callback URL Digit will redirect to after KYC completion.
+  //
+  // Vendor confirmed 2026-10-08 that Digit UAT is intermittent: Create
+  // Proposal often returns "Kyc Link is Empty" or "Failed as endpoint takes
+  // more than 30 sec" on the first try, succeeds on the second. Retry up to
+  // 3 times with a short backoff before surfacing the failure to the user.
   const callbackurl = window.location.origin + DIGIT_KYC_RETURN_PATH;
   const createBody = isBike
     ? buildDigitBikeProposalBody({ errorStatusType: 'string', callbackurl })
     : buildDigitCarProposalBody({ errorStatusType: 'string', callbackurl });
-  btn.innerHTML='Submitting to Digit…';
-  const cr = await fetch(`/api/swapinsurer/${typeQs}-proposal?insurer=DIGIT`, {
-    method:'POST', headers:{'content-type':'application/json'},
-    body: JSON.stringify(createBody),
-  });
-  const cj = await cr.json();
-  if (!cr.ok) throw new Error('Create Proposal failed: ' + (cj.error || cj.errorMessage || `HTTP ${cr.status}`));
-  // Vendor contract: errorMessage populated OR errorStatus string-truthy ⇒ failure.
-  const createErr = (cj.errorMessage && String(cj.errorMessage).trim())
-    || (typeof cj.errorStatus === 'string' && cj.errorStatus.trim() && cj.errorStatus !== '');
-  if (createErr) {
-    throw new Error('Digit proposal rejected: ' + String(createErr).replace(/[\r\n\\]+/g,' ').replace(/"/g,'').trim());
+  const DIGIT_RETRIES = 3;
+  const DIGIT_RETRY_MS = 1500;
+  const isTransient = (msg) => {
+    const s = String(msg || '').toLowerCase();
+    return s.includes('kyc link is empty')
+      || s.includes('takes more than 30 sec')
+      || s.includes('endpoint timeout')
+      || s.includes('timed out');
+  };
+  let cj = null, lastErr = '';
+  for (let attempt = 1; attempt <= DIGIT_RETRIES; attempt++) {
+    btn.innerHTML = attempt === 1 ? 'Submitting to Digit…' : `Retrying Digit (attempt ${attempt}/${DIGIT_RETRIES})…`;
+    const cr = await fetch(`/api/swapinsurer/${typeQs}-proposal?insurer=DIGIT`, {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify(createBody),
+    });
+    cj = await cr.json();
+    if (!cr.ok) { lastErr = (cj.error || cj.errorMessage || `HTTP ${cr.status}`); break; }
+    const createErr = (cj.errorMessage && String(cj.errorMessage).trim())
+      || (typeof cj.errorStatus === 'string' && cj.errorStatus.trim() && cj.errorStatus !== '');
+    const haveLink  = cj.paymentororkycLink && cj.enquiryID && cj.refProposal;
+    if (haveLink && !createErr) break;      // success
+    lastErr = String(createErr || 'No KYC link returned').replace(/[\r\n\\]+/g,' ').replace(/"/g,'').trim();
+    if (!isTransient(lastErr) || attempt === DIGIT_RETRIES) break;  // non-transient or exhausted
+    trackLead('digit_proposal_retry', {attempt, reason: lastErr.slice(0,120)});
+    await new Promise(r => setTimeout(r, DIGIT_RETRY_MS));
   }
-  if (!cj.paymentororkycLink || !cj.enquiryID || !cj.refProposal) {
-    // The vendor returned 200 but omitted the KYC link / IDs. Known Digit UAT
-    // quirk: "Kyc Link is Empty" — flagged with the vendor; see pending ask.
-    throw new Error('Digit accepted the proposal but did not return a KYC link. Please retry in a moment or switch to HDFC ERGO.');
+  if (!cj || !cj.paymentororkycLink || !cj.enquiryID || !cj.refProposal) {
+    throw new Error(`Digit proposal did not complete after ${DIGIT_RETRIES} attempts. Last response: ${lastErr || 'unknown'}. Please try again in a moment or switch to HDFC ERGO.`);
   }
 
   // Persist the handoff for the two return stages.

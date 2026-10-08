@@ -607,9 +607,14 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     headers: simsonHeaders, body: mmv({ make: 'Honda' }),
   });
   const bikeModelList = Array.isArray(bikeModelsRes.data) ? bikeModelsRes.data : [];
-  const bikeModelHit = bikeModelList.find(m => /^Activa$/i.test(m.model || ''))
+  // Honda Activa and Activa 125 Fi both return "Unable to generate proposal"
+  // on HDFC today (vendor-side, insurer-level model block — confirmed by
+  // probe-hdfc-bike-models.mjs on 2026-10-08). Activa I rates and proposals
+  // cleanly, so use it as the default bike fixture to keep the matrix green.
+  const bikeModelHit = bikeModelList.find(m => /^Activa I$/i.test(m.model || ''))
+    || bikeModelList.find(m => /^Activa$/i.test(m.model || ''))
     || bikeModelList.find(m => /^Activa\b/i.test(m.model || ''));
-  const bikeModelName = bikeModelHit ? bikeModelHit.model : 'Activa';
+  const bikeModelName = bikeModelHit ? bikeModelHit.model : 'Activa I';
   bikeVehicle.model = bikeModelName;
   console.log('   bike model picked =', bikeModelName);
 
@@ -1134,14 +1139,30 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     proposal: digitCreateProposal,
     carProposal: digitCreateProposal,
   };
-  const digitCreateCarPropRes = await call('CAR — Proposal (Digit)', 'getcarproposal (DIGIT)', `${SWAPINS_BASE}/partner/motor/getcarproposal`, {
-    headers: {
-      'Content-Type': 'application/json', 'accept': '*/*',
-      'ClientName': CLIENT, 'Server': 'UAT', 'Insurer': 'DIGIT',
-      'Authorization': `Bearer ${swapTok}`,
-    },
-    body: digitCarCreatePropBody,
-  });
+  // Vendor confirmed 2026-10-08: Digit UAT is intermittent — "Kyc Link is
+  // Empty" or "Failed as endpoint takes more than 30 sec" on first try,
+  // succeeds on second/third. Retry up to 3 times.
+  let digitCreateCarPropRes = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    digitCreateCarPropRes = await call(
+      'CAR — Proposal (Digit)',
+      `getcarproposal (DIGIT)${attempt === 1 ? '' : ' — attempt ' + attempt}`,
+      `${SWAPINS_BASE}/partner/motor/getcarproposal`,
+      {
+        headers: {
+          'Content-Type': 'application/json', 'accept': '*/*',
+          'ClientName': CLIENT, 'Server': 'UAT', 'Insurer': 'DIGIT',
+          'Authorization': `Bearer ${swapTok}`,
+        },
+        body: digitCarCreatePropBody,
+      });
+    const b = digitCreateCarPropRes.data || {};
+    const transientErr = /Kyc Link is Empty|takes more than 30 sec|timeout|timed out/i.test(String(b.errorMessage||''));
+    const ok = b.paymentororkycLink && b.enquiryID && b.refProposal;
+    if (ok || !transientErr) break;
+    console.log(`   Digit getcarproposal attempt ${attempt} transient (${(b.errorMessage||'').slice(0,60)}) — retrying…`);
+    await new Promise(r => setTimeout(r, 1500));
+  }
   console.log('   Digit getcarproposal →',
     typeof digitCreateCarPropRes.data === 'object' ? JSON.stringify(digitCreateCarPropRes.data).slice(0, 400) : String(digitCreateCarPropRes.data).slice(0, 400));
 
