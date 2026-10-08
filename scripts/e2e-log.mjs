@@ -1108,12 +1108,21 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     seatCapacity: '5',
     cc: '1198', fuel: 'Petrol',
   };
+  // Vendor doc-v2 (2026-10-08 13:05): sample shows errorStatus:"false" as a
+  // STRING in request bodies, and `proposal` key only (no more carProposal /
+  // bikeProposal dual-key workaround).
+  //
+  // Reality on live UAT today (verified 13:28 IST): the insertcarproposal
+  // model binder STILL rejects String with "could not be converted to
+  // System.Boolean", so we send Boolean `false` to Insert and String "false"
+  // to Create as the pragmatic workaround until the Insert binder catches up
+  // with the doc. The `proposal`-only key change (no more carProposal) has
+  // actually shipped — kept it.
   const digitCarInsertPropBody = {
     quote: carGetBodyDigit.quote,
-    carQuoteResponse: { ...digitCarQR, errorStatus: false },  // insertcarproposal wants Bool
+    carQuoteResponse: { ...digitCarQR, errorStatus: false },  // binder still Bool for Insert
     carAddons: carGetBodyDigit.carAddons,
     proposal: digitCarProposal,
-    carProposal: digitCarProposal,
   };
   const digitInsertCarPropRes = await call('CAR — Proposal (Digit)', 'insertcarproposal (MIALTUS)', `${MIALTUS_BASE}/partner/motor/insertcarproposal`, {
     headers: {
@@ -1135,9 +1144,8 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
   };
   const digitCarCreatePropBody = {
     ...digitCarInsertPropBody,
-    carQuoteResponse: { ...digitCarQR, errorStatus: '' },      // getcarproposal wants String
+    carQuoteResponse: { ...digitCarQR, errorStatus: 'false' },  // Create binder matches doc (String)
     proposal: digitCreateProposal,
-    carProposal: digitCreateProposal,
   };
   // Vendor confirmed 2026-10-08: Digit UAT is intermittent — "Kyc Link is
   // Empty" or "Failed as endpoint takes more than 30 sec" on first try,
@@ -1157,7 +1165,7 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
         body: digitCarCreatePropBody,
       });
     const b = digitCreateCarPropRes.data || {};
-    const transientErr = /Kyc Link is Empty|takes more than 30 sec|timeout|timed out/i.test(String(b.errorMessage||''));
+    const transientErr = /Kyc Link is Empty|takes more than 30 sec|timeout|timed out|502 bad gateway|<title>\s*5\d\d/i.test(String(b.errorMessage||''));
     const ok = b.paymentororkycLink && b.enquiryID && b.refProposal;
     if (ok || !transientErr) break;
     console.log(`   Digit getcarproposal attempt ${attempt} transient (${(b.errorMessage||'').slice(0,60)}) — retrying…`);
@@ -1194,13 +1202,15 @@ function pretty(v) {
 }
 function isUpstreamErr(body) {
   if (!body || typeof body !== 'object') return false;
-  // Vendor contract (Mialtus Q&A follow-up): errorStatus is null on success,
-  // any string value signals an actual error (e.g. "true", "Premium
-  // Mismatch"). Boolean true also signals an error on the older paths.
+  // Vendor doc-v2 contract: errorStatus is one of null / "" / "false" on
+  // success; "true" (or boolean true on legacy endpoints) signals an error.
+  // Any other string ("Premium Mismatch", "Vehicle not Mapped at UAT") is
+  // caught via errorMessage/errorText below. Don't flag "false" as error.
   const es = body.errorStatus;
   if (es === true) return true;
-  if (typeof es === 'string' && es.trim() !== '') return true;
+  if (typeof es === 'string' && es.trim().toLowerCase() === 'true') return true;
   if (body.errorMessage && String(body.errorMessage).trim()) return true;
+  if (body.errorText && String(body.errorText).trim()) return true;
   // insertquote returns status:"0" + message with C# stack trace and transId:null
   if (body.transId === null && String(body.status || '') === '0' && body.message) return true;
   return false;
@@ -1281,11 +1291,14 @@ function renderHtml(log) {
     const e = log.find(x => new RegExp(`get${line}quote \\(${insurer}\\)`, 'i').test(x.step));
     if (!e || !e.res) return { cls: 'skip', text: 'not run' };
     const b = e.res.body || {};
-    // Vendor contract: errorStatus is null on success; any non-empty string
-    // (e.g. "true", "Premium Mismatch") signals an error. Boolean true is
-    // also an error on the older paths.
+    // Vendor doc-v2 contract: errorStatus is null / "" / "false" on success,
+    // "true" (or boolean true legacy) on error. Non-"true" error strings
+    // (e.g. "Vehicle not Mapped at UAT") come through errorText / errorMessage.
     const es = b.errorStatus;
-    const isErr = es === true || (typeof es === 'string' && es.trim() !== '');
+    const isErr = es === true
+      || (typeof es === 'string' && es.trim().toLowerCase() === 'true')
+      || (b.errorText && String(b.errorText).trim())
+      || (b.errorMessage && String(b.errorMessage).trim());
     const premium = Number(b.payablePremium);
     if (isErr) {
       return { cls: 'warn', text: `DECLINED · ${String(b.errorText || b.errorMessage || '').split('\n')[0].slice(0, 90)}` };

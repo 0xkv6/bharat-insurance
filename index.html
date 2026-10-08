@@ -2950,9 +2950,13 @@ function buildCarProposalBody(){
 // numbers into the exact field set Digit's binder expects. HDFC-superset
 // fields that would deserialize to Decimal must be absent or 0; string-typed
 // fields must be string-or-null.
-function toDigitCarQuoteResponse(raw, errorStatusType /* 'bool' | 'string' */){
+// Vendor doc-v2 (2026-10-08) samples show errorStatus:"false" as a String
+// in request bodies. However the live insertcarproposal / insertbikeproposal
+// binder STILL rejects String ("could not be converted to System.Boolean").
+// Pragmatic workaround: Boolean false for Insert, String "false" for Create.
+function toDigitCarQuoteResponse(raw, { errorStatusType /* 'bool' | 'string' */ } = {}){
   const num = (k) => Number(raw && raw[k]) || 0;
-  const es  = errorStatusType === 'string' ? '' : false;
+  const es  = errorStatusType === 'string' ? 'false' : false;
   return {
     applicationId: null,
     lLtoEmployee: num('lLtoEmployee'),
@@ -2995,9 +2999,9 @@ function toDigitCarQuoteResponse(raw, errorStatusType /* 'bool' | 'string' */){
 }
 
 // Schema-exact Digit bike quoteResponseBike (bike doc §quoteResponseBike).
-function toDigitBikeQuoteResponse(raw, errorStatusType){
+function toDigitBikeQuoteResponse(raw, { errorStatusType } = {}){
   const num = (k) => Number(raw && raw[k]) || 0;
-  const es  = errorStatusType === 'string' ? '' : false;
+  const es  = errorStatusType === 'string' ? 'false' : false;
   return {
     applicationId: null, currentNCB: null, insurer: 'digit',
     policystartDate: String((raw && raw.policystartDate) || ''),
@@ -3129,14 +3133,11 @@ function buildDigitCarProposalBody(opts){
   const proposal = buildDigitProposalCore(false);
   // Create Proposal (API 2) adds callbackurl; Insert Proposal (API 1) omits it.
   if (opts && opts.callbackurl) proposal.callbackurl = opts.callbackurl;
-  // Dual-key the proposal to satisfy the vendor's `carProposal field required`
-  // validator — same workaround we used for HDFC bike until vendor fixed it.
   return {
     quote: insertBody.quote,
-    carQuoteResponse: toDigitCarQuoteResponse(vehicle._quoteResponse || {}, errorStatusType),
+    carQuoteResponse: toDigitCarQuoteResponse(vehicle._quoteResponse || {}, { errorStatusType }),
     carAddons: insertBody.carAddons,
     proposal,
-    carProposal: proposal,
   };
 }
 
@@ -3149,9 +3150,8 @@ function buildDigitBikeProposalBody(opts){
   return {
     quote: insertBody.quote,
     bikeAddons: insertBody.bikeAddons,
-    quoteResponseBike: toDigitBikeQuoteResponse(vehicle._quoteResponse || {}, errorStatusType),
+    quoteResponseBike: toDigitBikeQuoteResponse(vehicle._quoteResponse || {}, { errorStatusType }),
     proposal,
-    bikeProposal: proposal,
   };
 }
 
@@ -3253,12 +3253,14 @@ async function payNow(){
       body: JSON.stringify(proposalBody),
     });
     const j = await r.json();
-    // Vendor contract (Mialtus_Client_QA follow-up): errorStatus is null on
-    // success; any string value signals an actual validation / processing
-    // error (e.g. "true", "Premium Mismatch", etc.). Treat boolean true OR
-    // any non-empty string as a failure.
-    const propErr = j.errorStatus === true
-      || (typeof j.errorStatus === 'string' && j.errorStatus.trim() !== '');
+    // Vendor doc-v2 (2026-10-08) contract: errorStatus is null / "" / "false"
+    // on success, "true" (or legacy boolean true) on failure. Any specific
+    // error string ("Premium Mismatch" etc.) comes through errorMessage. So:
+    // treat "true"-ish OR a populated errorMessage as the failure signal.
+    const es = j.errorStatus;
+    const propErr = es === true
+      || (typeof es === 'string' && es.trim().toLowerCase() === 'true')
+      || (j.errorMessage && String(j.errorMessage).trim());
     if(!r.ok || propErr){
       throw new Error(j.errorMessage || j.error || `Proposal failed (${r.status})`);
     }
@@ -3424,7 +3426,8 @@ async function startDigitProposalFlow(mobile){
   // Resolve state/city from the KYC pincode (same pre-step as HDFC).
   await enrichAddressFromKycPincode();
 
-  // --- API 1: Insert Proposal (MIALTUS). errorStatus must be Boolean here. ---
+  // --- API 1: Insert Proposal (MIALTUS). Boolean errorStatus (binder still
+  // requires it despite doc-v2 showing String). ---
   const insertBody = isBike
     ? buildDigitBikeProposalBody({ errorStatusType: 'bool' })
     : buildDigitCarProposalBody({ errorStatusType: 'bool' });
@@ -3439,9 +3442,7 @@ async function startDigitProposalFlow(mobile){
     throw new Error('Insert Proposal rejected: ' + (ij.message || JSON.stringify(ij).slice(0, 200)));
   }
 
-  // --- API 2: Create Proposal (DIGIT). errorStatus must be String here. ---
-  // Add the callback URL Digit will redirect to after KYC completion.
-  //
+  // --- API 2: Create Proposal (DIGIT). ---
   // Vendor confirmed 2026-10-08 that Digit UAT is intermittent: Create
   // Proposal often returns "Kyc Link is Empty" or "Failed as endpoint takes
   // more than 30 sec" on the first try, succeeds on the second. Retry up to
@@ -3457,7 +3458,10 @@ async function startDigitProposalFlow(mobile){
     return s.includes('kyc link is empty')
       || s.includes('takes more than 30 sec')
       || s.includes('endpoint timeout')
-      || s.includes('timed out');
+      || s.includes('timed out')
+      || s.includes('502 bad gateway')
+      || s.includes('bad gateway')
+      || /<title>\s*5\d\d/i.test(String(msg||''));
   };
   let cj = null, lastErr = '';
   for (let attempt = 1; attempt <= DIGIT_RETRIES; attempt++) {
