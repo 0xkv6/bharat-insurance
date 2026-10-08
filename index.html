@@ -851,6 +851,18 @@ h2 .g, .rot li{background:none!important;-webkit-background-clip:border-box!impo
 .cis-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center}
 .cis-actions .btn{padding:10px 16px;font-size:14px;text-decoration:none}
 @media(max-width:520px){.cis-back{padding:8px}.cis-h{padding:14px 16px 8px}.cis-h h3{font-size:16px}.cis-f{padding:12px 16px 14px}.cis-actions{justify-content:stretch}.cis-actions .btn{flex:1;min-width:0;text-align:center}}
+/* IRDAI pre-payment consent modal */
+.irdai-body{padding:18px 22px;overflow-y:auto;max-height:60vh;background:#fff;font-size:13.5px;line-height:1.55;color:var(--ink)}
+.irdai-body h4{margin:16px 0 6px;font-size:13px;color:var(--navy);font-weight:800;letter-spacing:.3px;text-transform:uppercase}
+.irdai-body h4:first-child{margin-top:0}
+.irdai-body p{margin:0 0 8px}
+.irdai-body .irdai-sect{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin:10px 0;background:#f8fafd}
+.irdai-body .irdai-sect label.cis-ack{margin:0}
+.irdai-body .cpa-choices{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.irdai-body .cpa-choices label{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--ink);cursor:pointer;line-height:1.5}
+.irdai-body .cpa-choices input{margin-top:3px;flex-shrink:0;accent-color:var(--green);cursor:pointer}
+.irdai-body .alt-cover-input{width:100%;margin-top:6px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;font-family:inherit}
+.irdai-body .fine{font-size:11.5px;color:var(--muted);margin-top:4px}
 .dt-sect{margin:14px 0 2px;padding:8px 0 4px;border-top:1px solid #eef2fa;font-size:12.5px;color:var(--muted);font-weight:600;letter-spacing:.3px;text-transform:uppercase;display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
 .dt-sect b{color:var(--navy);font-weight:800;letter-spacing:.5px}
 .dt-sect small{font-weight:500;color:var(--muted);text-transform:none;letter-spacing:0;font-size:11.5px}
@@ -2516,7 +2528,9 @@ function buildQuoteBody(){
         tpprepolExpiryDate:null,
       },
       bikeAddons:{
-        paTenure:'1', isCPACover:true, isNoCPAReason:'',
+        paTenure:'1',
+        isCPACover: cpaCovered(),
+        isNoCPAReason: cpaCovered() ? '' : (cpaReason() || 'Already covered under existing standalone PA'),
         paidDriver:false, accidentCoPassenger:false,
         accidentCoPassengerValue:0, tppd:false,
         // Documented in Swapinsurer bike addons schema; empty/zero is the
@@ -2532,13 +2546,28 @@ function buildQuoteBody(){
       policyType: hasPrevPol ? 'renewcar' : 'expired',
     },
     carAddons:{
-      paTenure:'1', isCPACover:true, isNoCPAReason:'',
+      paTenure:'1',
+      isCPACover: cpaCovered(),
+      isNoCPAReason: cpaCovered() ? '' : (cpaReason() || 'Already covered under existing standalone PA'),
       paidDriver:false, accidentCoPassenger:false,
       accidentCoPassengerValue:0,
       externallyCng:false, externallycngValue:0,
       tppd:false,
     },
   };
+}
+
+// Helpers so buildQuoteBody respects the IRDAI consent CPA opt-out. Default
+// (no consent recorded yet, e.g. at the Quote step) is `true` — mandatory
+// CPA cover per IRDAI unless the customer actively opts out at the pay step.
+function cpaCovered(){
+  const c = vehicle._irdaiConsent;
+  if (!c) return true;
+  return !!c.cpaCovered;
+}
+function cpaReason(){
+  const c = vehicle._irdaiConsent;
+  return (c && c.cpaDeclineReason) || '';
 }
 
 // Clone the insert body and attach the transId as quoteId for the get-quote step.
@@ -3208,6 +3237,29 @@ async function payNow(){
   say('mobErr','Your e-policy arrives here on WhatsApp and SMS.');
   const btn=document.getElementById('payBtn');
 
+  // IRDAI consent gate (R3) — required before any real insurer handoff.
+  // Only prompt if we're going to actually submit a proposal (HDFC or Digit);
+  // the "coming soon" placeholder path skips it.
+  if (goingToPayHdfc() || goingToPayDigit()) {
+    const insurerLabel = goingToPayHdfc() ? 'HDFC ERGO' : 'Digit';
+    const consent = await showIrdaiConsentModal({ insurerLabel, premium: vehicle.price });
+    if (!consent) {
+      trackLead('irdai_consent_declined', {insurer: insurerLabel});
+      say('mobErr','You must accept the policy wording and declaration to proceed.', true);
+      return;
+    }
+    trackLead('irdai_consent_accepted', {
+      insurer: insurerLabel,
+      acceptedAt: consent.acceptedAt,
+      version: consent.version,
+      cpaCovered: consent.cpaCovered,
+    });
+    // Record on the vehicle so the proposal builder can carry CPA opt-out
+    // into the body (per vendor doc, isCPACover = true/false already drives
+    // this on the addons object).
+    vehicle._irdaiConsent = consent;
+  }
+
   // Dispatch by insurer: HDFC and Digit each have a documented end-to-end
   // flow; other combinations (e.g. Commercial) still fall through to the
   // manual-follow-up placeholder.
@@ -3313,6 +3365,115 @@ async function payNow(){
 // reliable than data: URLs for embedded PDFs). Resolves to true when the
 // user checks "I have read and understood" + clicks Proceed; false on
 // cancel or close.
+// IRDAI pre-payment consent — mandatory before we initiate any proposal /
+// payment. Shown only when the customer is about to pay through a documented
+// insurer path (HDFC or Digit). Returns a Promise resolving to:
+//   null                                         — user cancelled
+//   { acceptedAt, cpaCovered, cpaDeclineReason } — user accepted
+// `acceptedAt` + the version string are persisted via trackLead for ops /
+// audit review (R3 from the vendor consolidated doc; vendor confirmed on
+// 2026-10-08 this is Bharat Insurance's responsibility, not Simson's).
+const IRDAI_CONSENT_VERSION = '2026-10-08-v1';
+function showIrdaiConsentModal(ctx){
+  return new Promise((resolve) => {
+    const insurer   = (ctx && ctx.insurerLabel) || 'the insurer';
+    const premium   = Number((ctx && ctx.premium) || vehicle.price || 0);
+    const premiumStr = premium ? '₹' + premium.toLocaleString('en-IN') : 'the quoted premium';
+    const back = document.createElement('div');
+    back.className = 'cis-back';
+    back.innerHTML = `
+      <div class="cis-modal" role="dialog" aria-labelledby="irdaiTitle" aria-modal="true">
+        <div class="cis-h">
+          <h3 id="irdaiTitle">Confirm &amp; proceed to payment</h3>
+          <div class="cis-sub">Please review and acknowledge the following before we submit your proposal to ${esc(insurer)}.</div>
+        </div>
+        <div class="irdai-body">
+          <h4>Policy wording</h4>
+          <p>The policy will be issued subject to the terms, conditions, warranties and exclusions mentioned in the policy document.
+             After payment you will receive the full policy wording by email and WhatsApp.</p>
+
+          <h4>Information accuracy</h4>
+          <p>You confirm that all details provided &mdash; vehicle, registration, previous policy, nominee, personal details &mdash;
+             are accurate. Any mis-representation may result in the policy being cancelled and claims being rejected under IRDAI
+             rules (Insurance Act 1938 &sect;45).</p>
+
+          <h4>Compulsory Personal Accident (CPA) cover for owner-driver</h4>
+          <p>IRDAI requires a &#8377;15 lakh Personal Accident cover for the owner-driver of every private motor policy. You may
+             decline this cover <b>only if you already have an equivalent standalone PA cover with any insurer</b>.</p>
+          <div class="cpa-choices">
+            <label><input type="radio" name="cpaChoice" value="opt-in" checked>
+              <span>I accept the Compulsory Personal Accident cover of &#8377;15,00,000 for the owner-driver.</span></label>
+            <label><input type="radio" name="cpaChoice" value="opt-out">
+              <span>I <b>decline</b> CPA on this policy &mdash; I already hold an equivalent standalone personal-accident cover.</span></label>
+          </div>
+          <input type="text" class="alt-cover-input" id="irdaiAltCover" placeholder="Existing PA policy insurer + policy number" style="display:none">
+          <div class="fine">(Required only if you opt out above.)</div>
+
+          <div class="irdai-sect">
+            <label class="cis-ack">
+              <input type="checkbox" id="irdaiAckRead">
+              <span>I have read and understood the policy wording, inclusions, exclusions and claim process; and I accept the
+                    IRDAI mandatory disclosures above.</span>
+            </label>
+          </div>
+
+          <div class="irdai-sect">
+            <label class="cis-ack">
+              <input type="checkbox" id="irdaiAckAccurate">
+              <span>I confirm all information I have provided &mdash; including previous policy details &mdash; is true and
+                    accurate to the best of my knowledge.</span>
+            </label>
+          </div>
+
+          <p class="fine">Premium to be collected: <b>${esc(premiumStr)}</b>. Issued by ${esc(insurer)} and regulated by the
+             Insurance Regulatory and Development Authority of India (IRDAI). Grievances can be raised with the insurer or the
+             IRDAI Integrated Grievance Management System.</p>
+        </div>
+        <div class="cis-f">
+          <div class="cis-actions">
+            <button type="button" class="btn btn-ghost btn-sm" id="irdaiCancel">Cancel</button>
+            <button type="button" class="btn btn-primary btn-sm" id="irdaiConfirm" disabled>I agree &amp; proceed to pay</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(back);
+    document.body.style.overflow = 'hidden';
+    const altInput = back.querySelector('#irdaiAltCover');
+    const ackRead  = back.querySelector('#irdaiAckRead');
+    const ackAcc   = back.querySelector('#irdaiAckAccurate');
+    const confirmBtn = back.querySelector('#irdaiConfirm');
+    const cpaRadios  = back.querySelectorAll('input[name="cpaChoice"]');
+    function cpaCovered(){
+      const choice = Array.from(cpaRadios).find(r => r.checked);
+      return !choice || choice.value === 'opt-in';
+    }
+    function sync(){
+      const optOut = !cpaCovered();
+      altInput.style.display = optOut ? 'block' : 'none';
+      const altOk = optOut ? altInput.value.trim().length >= 6 : true;
+      confirmBtn.disabled = !(ackRead.checked && ackAcc.checked && altOk);
+    }
+    cpaRadios.forEach(r => r.addEventListener('change', sync));
+    altInput.addEventListener('input', sync);
+    ackRead.addEventListener('change', sync);
+    ackAcc.addEventListener('change', sync);
+    function cleanup(result){ back.remove(); document.body.style.overflow=''; resolve(result); }
+    back.querySelector('#irdaiCancel').addEventListener('click', () => cleanup(null));
+    confirmBtn.addEventListener('click', () => cleanup({
+      acceptedAt: new Date().toISOString(),
+      version: IRDAI_CONSENT_VERSION,
+      cpaCovered: cpaCovered(),
+      cpaDeclineReason: cpaCovered() ? '' : altInput.value.trim(),
+    }));
+    back.addEventListener('keydown', (e) => { if (e.key === 'Escape') cleanup(null); });
+    setTimeout(() => ackRead.focus(), 100);
+    sync();
+  });
+}
+
+// Tiny HTML-escape for inline string interpolation inside the modal above.
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
 function showCisModal(base64, proposalNo){
   return new Promise((resolve) => {
     // Build Blob URL from base64.
