@@ -11,3 +11,8 @@ Third Party API Docs/
 vendor-e2e-log.html
 # Internal alignment doc with vendor + strategy details; keep local.
 vendor-alignment-report.html
+# Vendor-facing query briefs (internal — forward via email, don't commit).
+vendor-queries-*.html
+# Probe output files from scripts/probe-*.mjs — regenerable, no PII,
+# but keep out of git to avoid noise.
+probe-*.json
