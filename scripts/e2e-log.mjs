@@ -554,6 +554,9 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     serviceTax: String(cqr.serviceTax || ''),
     insurerName: 'hdfc',
     termsCondition: 'true',
+    // Doc-v3 (2026-10-09): HDFC car proposal takes `callbackurl` — vendor
+    // computes checksum against this URL (B2 fix).
+    callbackurl: 'https://www.bharatinsurance.online/privateCar/hdfccartransaction',
     polStartDateToSaiba: cqr.policystartDate || '',
     polEndDateToSaiba: cqr.policyEndDate || '',
     seatCapacity: '5',
@@ -915,7 +918,10 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     serviceTax: String(qr.serviceTax || ''),
     insurerName: 'hdfc',
     saveForLater: '', typeofButon: '', transSavelaterText: '', transSaveLater: '',
-    termsCondition: 'true', proposerLink: '', stage: '6',
+    termsCondition: 'true',
+    // Doc-v3 (2026-10-09): HDFC bike proposal takes `callbackurl` (B2 fix).
+    callbackurl: 'https://www.bharatinsurance.online/privateBike/hdfcbiketransaction',
+    proposerLink: '', stage: '6',
     polStartDateToSaiba: qr.policystartDate || '',
     polEndDateToSaiba: qr.policyEndDate || '',
     tPexpiryDateToSaiba: qr.policyEndDate || '',
@@ -1108,19 +1114,12 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     seatCapacity: '5',
     cc: '1198', fuel: 'Petrol',
   };
-  // Vendor doc-v2 (2026-10-08 13:05): sample shows errorStatus:"false" as a
-  // STRING in request bodies, and `proposal` key only (no more carProposal /
-  // bikeProposal dual-key workaround).
-  //
-  // Reality on live UAT today (verified 13:28 IST): the insertcarproposal
-  // model binder STILL rejects String with "could not be converted to
-  // System.Boolean", so we send Boolean `false` to Insert and String "false"
-  // to Create as the pragmatic workaround until the Insert binder catches up
-  // with the doc. The `proposal`-only key change (no more carProposal) has
-  // actually shipped — kept it.
+  // Vendor doc-v3 + S1 resolution (2026-10-09): errorStatus unified across
+  // both Insert and Create endpoints to the String "false" per the doc
+  // samples. Pre-fix per-endpoint fork is gone.
   const digitCarInsertPropBody = {
     quote: carGetBodyDigit.quote,
-    carQuoteResponse: { ...digitCarQR, errorStatus: false },  // binder still Bool for Insert
+    carQuoteResponse: { ...digitCarQR, errorStatus: 'false' },
     carAddons: carGetBodyDigit.carAddons,
     proposal: digitCarProposal,
   };
@@ -1144,7 +1143,6 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
   };
   const digitCarCreatePropBody = {
     ...digitCarInsertPropBody,
-    carQuoteResponse: { ...digitCarQR, errorStatus: 'false' },  // Create binder matches doc (String)
     proposal: digitCreateProposal,
   };
   // Vendor confirmed 2026-10-08: Digit UAT is intermittent — "Kyc Link is

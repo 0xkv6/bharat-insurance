@@ -2805,6 +2805,11 @@ function buildBikeProposalBody(){
     insurerName: 'hdfc',
     saveForLater: '', typeofButon: '', transSavelaterText: '', transSaveLater: '',
     termsCondition: 'true',
+    // Doc-v3 (2026-10-09): HDFC proposals now take a `callbackurl` field.
+    // Vendor computes the checksum against this URL; HDFC gateway resolves
+    // Surl/Furl against it after payment. This is the B2 fix — no more need
+    // to prepend our origin client-side (which broke the checksum).
+    callbackurl: window.location.origin + '/privateBike/hdfcbiketransaction',
     proposerLink: '', stage: '6',
     polStartDateToSaiba: gj.policystartDate || '',
     polEndDateToSaiba: gj.policyEndDate || '',
@@ -2939,6 +2944,9 @@ function buildCarProposalBody(){
     serviceTax:     String(gj.serviceTax || ''),
     insurerName: 'hdfc',
     termsCondition: 'true',
+    // Doc-v3 (2026-10-09): HDFC car proposal now takes a `callbackurl` field.
+    // Vendor computes the checksum against this URL; the B2 fix.
+    callbackurl: window.location.origin + '/privateCar/hdfccartransaction',
     polStartDateToSaiba: gj.policystartDate || '',
     polEndDateToSaiba:   gj.policyEndDate || '',
     seatCapacity: String(pickSeatCapacity() || '5'),
@@ -2979,13 +2987,13 @@ function buildCarProposalBody(){
 // numbers into the exact field set Digit's binder expects. HDFC-superset
 // fields that would deserialize to Decimal must be absent or 0; string-typed
 // fields must be string-or-null.
-// Vendor doc-v2 (2026-10-08) samples show errorStatus:"false" as a String
-// in request bodies. However the live insertcarproposal / insertbikeproposal
-// binder STILL rejects String ("could not be converted to System.Boolean").
-// Pragmatic workaround: Boolean false for Insert, String "false" for Create.
-function toDigitCarQuoteResponse(raw, { errorStatusType /* 'bool' | 'string' */ } = {}){
+// Vendor doc-v3 + S1 resolved (2026-10-09): errorStatus unified to String
+// "false" on both Insert and Create endpoints. Pre-fix per-endpoint fork
+// removed; the errorStatusType parameter is now ignored (kept so the
+// existing call sites don't need updating in one go).
+function toDigitCarQuoteResponse(raw){
   const num = (k) => Number(raw && raw[k]) || 0;
-  const es  = errorStatusType === 'string' ? 'false' : false;
+  const es  = 'false';
   return {
     applicationId: null,
     lLtoEmployee: num('lLtoEmployee'),
@@ -3028,9 +3036,9 @@ function toDigitCarQuoteResponse(raw, { errorStatusType /* 'bool' | 'string' */ 
 }
 
 // Schema-exact Digit bike quoteResponseBike (bike doc §quoteResponseBike).
-function toDigitBikeQuoteResponse(raw, { errorStatusType } = {}){
+function toDigitBikeQuoteResponse(raw){
   const num = (k) => Number(raw && raw[k]) || 0;
-  const es  = errorStatusType === 'string' ? 'false' : false;
+  const es  = 'false';
   return {
     applicationId: null, currentNCB: null, insurer: 'digit',
     policystartDate: String((raw && raw.policystartDate) || ''),
