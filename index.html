@@ -3168,8 +3168,11 @@ function buildDigitCarProposalBody(opts){
   if (vehicle._partnerTransId) insertBody.quote.quoteId = String(vehicle._partnerTransId);
   const errorStatusType = (opts && opts.errorStatusType) || 'bool';
   const proposal = buildDigitProposalCore(false);
-  // Create Proposal (API 2) adds callbackurl; Insert Proposal (API 1) omits it.
+  // Create Proposal (API 2) adds callbackurl + successReturnUrl + cancelReturnUrl.
+  // Vendor added the latter two as required on 2026-10-21 (not in doc yet).
   if (opts && opts.callbackurl) proposal.callbackurl = opts.callbackurl;
+  if (opts && opts.successReturnUrl) proposal.successReturnUrl = opts.successReturnUrl;
+  if (opts && opts.cancelReturnUrl)  proposal.cancelReturnUrl  = opts.cancelReturnUrl;
   return {
     quote: insertBody.quote,
     carQuoteResponse: toDigitCarQuoteResponse(vehicle._quoteResponse || {}, { errorStatusType }),
@@ -3184,6 +3187,8 @@ function buildDigitBikeProposalBody(opts){
   const errorStatusType = (opts && opts.errorStatusType) || 'bool';
   const proposal = buildDigitProposalCore(true);
   if (opts && opts.callbackurl) proposal.callbackurl = opts.callbackurl;
+  if (opts && opts.successReturnUrl) proposal.successReturnUrl = opts.successReturnUrl;
+  if (opts && opts.cancelReturnUrl)  proposal.cancelReturnUrl  = opts.cancelReturnUrl;
   return {
     quote: insertBody.quote,
     bikeAddons: insertBody.bikeAddons,
@@ -3583,6 +3588,7 @@ function submitHdfcPaymentForm(resp){
 // The return handler in payment/return.html picks up the sessionStorage state
 // and calls Payment-After-KYC → payment redirect → Response-After-Payment.
 const DIGIT_KYC_RETURN_PATH     = '/digit/kyc-return';
+const DIGIT_KYC_CANCEL_PATH     = '/digit/kyc-cancel';
 const DIGIT_PAYMENT_RETURN_PATH = '/digit/payment-return';
 async function startDigitProposalFlow(mobile){
   const btn = document.getElementById('payBtn');
@@ -3616,10 +3622,12 @@ async function startDigitProposalFlow(mobile){
   // Proposal often returns "Kyc Link is Empty" or "Failed as endpoint takes
   // more than 30 sec" on the first try, succeeds on the second. Retry up to
   // 3 times with a short backoff before surfacing the failure to the user.
-  const callbackurl = window.location.origin + DIGIT_KYC_RETURN_PATH;
+  const callbackurl       = window.location.origin + DIGIT_KYC_RETURN_PATH;
+  const successReturnUrl  = window.location.origin + DIGIT_KYC_RETURN_PATH;
+  const cancelReturnUrl   = window.location.origin + DIGIT_KYC_CANCEL_PATH;
   const createBody = isBike
-    ? buildDigitBikeProposalBody({ errorStatusType: 'string', callbackurl })
-    : buildDigitCarProposalBody({ errorStatusType: 'string', callbackurl });
+    ? buildDigitBikeProposalBody({ errorStatusType: 'string', callbackurl, successReturnUrl, cancelReturnUrl })
+    : buildDigitCarProposalBody({ errorStatusType: 'string', callbackurl, successReturnUrl, cancelReturnUrl });
   const DIGIT_RETRIES = 3;
   const DIGIT_RETRY_MS = 1500;
   const isTransient = (msg) => {

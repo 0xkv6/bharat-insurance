@@ -1140,6 +1140,10 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
   const digitCreateProposal = {
     ...digitCarProposal,
     callbackurl: 'https://www.bharatinsurance.online/digit/kyc-return',
+    // New vendor-side required fields observed 2026-10-21 — "Missing / Invalid
+    // fields: [ 'cancelReturnUrl', 'successReturnUrl' ]". Not in doc yet.
+    successReturnUrl: 'https://www.bharatinsurance.online/digit/kyc-return',
+    cancelReturnUrl:  'https://www.bharatinsurance.online/digit/kyc-cancel',
   };
   const digitCarCreatePropBody = {
     ...digitCarInsertPropBody,
@@ -1178,6 +1182,161 @@ function buildGetQuoteBody(insertBody, transId, isBike) {
     note: 'Headless harness stops at the Create Proposal response (KYC link). Steps 3–4 require a real browser KYC + payment.',
     req: { url: `${SWAPINS_BASE}/partner/ekyc/getpaymentafterkyc then ${SWAPINS_BASE}/partner/motor/getresponseafterpayment`, method: 'POST', body: '{ enquiryID, applicationId, refProposal, module:"Car", transId, callbackurl }' },
     res: { status: 0, ok: false, body: 'Awaits real KYC completion on the Digit portal returned by getcarproposal.' },
+    ms: 0,
+  });
+
+  // =====================================================================
+  // == 10. Digit BIKE flow — Insert Proposal + Create Proposal         ==
+  // =====================================================================
+  // Per Bike_Proposal_APIs_Documentation_Digit (2026-10-07):
+  //   API 1: POST /partner/motor/insertbikeproposal  (MIALTUS)
+  //   API 2: POST /partner/bike/getbikeproposal      (SWAPINS, Insurer: DIGIT)
+  //   API 3: POST /partner/ekyc/getpaymentafterkyc    (needs real KYC)
+  //   API 4: POST /partner/motor/getresponseafterpayment (needs real payment)
+  console.log('== 10. Digit BIKE Insert Proposal + Create Proposal ==');
+
+  const _br = digitBikeRes.data || {};
+  const bnum = (k) => Number(_br[k]) || 0;
+  const digitBikeQR = {
+    applicationId: null, currentNCB: null, insurer: 'digit',
+    policystartDate: String(_br.policystartDate || ''),
+    policyEndDate:   String(_br.policyEndDate || ''),
+    errorStatus: false, errorText: null,
+    idvRequest: null, idvResponse: null,
+    tppd: bnum('tppd'),
+    baseThirdPartyPremium: bnum('baseThirdPartyPremium'),
+    paOwnerDriver: bnum('paOwnerDriver'),
+    netPremium: bnum('netPremium'),
+    serviceTax: bnum('serviceTax'),
+    payablePremium: bnum('payablePremium'),
+    quoteNo: null,
+    tpBiFuel: bnum('tpBiFuel'),
+    personalaccident: bnum('personalaccident'),
+    paidDriversi: bnum('paidDriversi'),
+    llPaidDriver: bnum('llPaidDriver'),
+    llEmployee: bnum('llEmployee'),
+    totalTPCalculated: bnum('totalTPCalculated'),
+    coverType: null, termType: 'TPOnly',
+    pTransactionId: String(_br.pTransactionId || ''),
+    thirdPartyPremium: bnum('thirdPartyPremium'),
+    paidDriverPremium: bnum('paidDriverPremium'),
+    userSpecialDiscount: null,
+    geogExtensionTPPremium: bnum('geogExtensionTPPremium'),
+  };
+  const digitBikeMfg = mfgFromRegDate(bikeVehicle.regDate);
+  const digitBikeReg = String(bikeVehicle.reg || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const digitBikeRegParts = digitBikeReg.match(/^([A-Z]{2})(\d{1,2})([A-Z]{1,3})(\d{1,4})$/) || [];
+  const digitBikeProposal = {
+    salutation: 'Mr',
+    pTransactionId: digitBikeQR.pTransactionId || '',
+    firstName: 'AVINASH', lastName: 'PANDEY',
+    dob: toDMY('1990-01-01'),
+    email: 'test@gmail.com', mobile: '9798798797',
+    panCard: KYC_PAN,
+    gender: 'Male',
+    maritialValue: 'Married', maritialText: 'Married',
+    occupationValue: 'Private Service', occupationText: 'Private Service',
+    gstNo: '', adhaarNumber: '',
+    nomineeFname: 'Priya', nomineeLname: 'Singh',
+    nomineeDob: toDMY('1995-06-15'),
+    relationshipValue: 'FATHER', relationshipText: 'FATHER',
+    vehicleOwnedBy: 'I',
+    rto: bikeVehicle.rto,
+    regA: digitBikeRegParts[1] || '', regB: digitBikeRegParts[2] || '',
+    regC: digitBikeRegParts[3] || '', regD: digitBikeRegParts[4] || '',
+    regDate: bikeVehicle.regDate,
+    engineNo: 'TESTENGINE12345', chassisNo: 'TESTCHASSIS12345',
+    isVehcileFinance: false, financeCity: '',
+    isPuc: false, pucNo: '', pucExpiryDate: null,
+    prevoiusInsurerValue: '', prevoiusInsurerText: '',
+    prevoiusPolicyNumber: '', prevoiusPolicyType: '',
+    prevoiusPolicyExpiryDate: '',
+    policyType: 'renew',
+    addrL1: 'DFGDFGDFGF', addrL2: 'GDFGDFGDFGDFGFG', landmark: '',
+    stateName: 'Maharashtra', stateCode: '27',
+    cityName: 'MUMBAI', cityCode: 'MUMBAI',
+    pincode: '400001',
+    isSameAddressChecked: true,
+    rcLandmark: '',
+    rcAddrL1: 'DFGDFGDFGF', rcAddrL2: 'GDFGDFGDFGDFGFG',
+    rcStateName: 'Maharashtra', rcStateCode: '27',
+    rcCityName: 'MUMBAI', rcCityCode: 'MUMBAI',
+    rcPincode: '400001',
+    make: bikeVehicle.make, model: bikeVehicle.model,
+    variant: bikeVehicle.variant || '',
+    idv: '0', coverType: 'tponly',
+    mfgYear: digitBikeMfg.mfgYear, mfgMonth: digitBikeMfg.mfgMonth,
+    transId: String(bikeTransIdDigit || ''),
+    netPremium:     String(digitBikeQR.netPremium || ''),
+    payablePremium: String(digitBikeQR.payablePremium || ''),
+    serviceTax:     String(digitBikeQR.serviceTax || ''),
+    insurerName: 'digit',
+    termsCondition: 'true',
+    polStartDateToSaiba: digitBikeQR.policystartDate || '',
+    polEndDateToSaiba:   digitBikeQR.policyEndDate || '',
+    seatCapacity: '',
+    cc: bikeVehicle.variant || '',
+    fuel: 'Petrol',
+  };
+  const digitBikeInsertPropBody = {
+    quote: bikeGetBodyDigit.quote,
+    quoteResponseBike: { ...digitBikeQR, errorStatus: 'false' },
+    bikeAddons: bikeGetBodyDigit.bikeAddons,
+    proposal: digitBikeProposal,
+  };
+  const digitInsertBikePropRes = await call('BIKE — Proposal (Digit)', 'insertbikeproposal (MIALTUS)', `${MIALTUS_BASE}/partner/motor/insertbikeproposal`, {
+    headers: {
+      'Content-Type': 'application/json', 'accept': '*/*',
+      'ClientName': CLIENT, 'Server': 'UAT',
+      'Authorization': `Bearer ${mialtusTok}`,
+    },
+    body: digitBikeInsertPropBody,
+  });
+  console.log('   Digit insertbikeproposal →',
+    typeof digitInsertBikePropRes.data === 'object' ? JSON.stringify(digitInsertBikePropRes.data).slice(0, 300) : String(digitInsertBikePropRes.data).slice(0, 300));
+
+  // Same validator quirk as Digit car: send both `proposal` and `bikeProposal`.
+  const digitBikeCreateProposal = {
+    ...digitBikeProposal,
+    callbackurl: 'https://www.bharatinsurance.online/digit/kyc-return',
+    successReturnUrl: 'https://www.bharatinsurance.online/digit/kyc-return',
+    cancelReturnUrl:  'https://www.bharatinsurance.online/digit/kyc-cancel',
+  };
+  const digitBikeCreatePropBody = {
+    ...digitBikeInsertPropBody,
+    proposal: digitBikeCreateProposal,
+    bikeProposal: digitBikeCreateProposal,
+  };
+  let digitCreateBikePropRes = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    digitCreateBikePropRes = await call(
+      'BIKE — Proposal (Digit)',
+      `getbikeproposal (DIGIT)${attempt === 1 ? '' : ' — attempt ' + attempt}`,
+      `${SWAPINS_BASE}/partner/bike/getbikeproposal`,
+      {
+        headers: {
+          'Content-Type': 'application/json', 'accept': '*/*',
+          'ClientName': CLIENT, 'Server': 'UAT', 'Insurer': 'DIGIT',
+          'Authorization': `Bearer ${swapTok}`,
+        },
+        body: digitBikeCreatePropBody,
+      });
+    const b = digitCreateBikePropRes.data || {};
+    const transientErr = /Kyc Link is Empty|takes more than 30 sec|timeout|timed out|502 bad gateway|<title>\s*5\d\d/i.test(String(b.errorMessage||''));
+    const ok = b.paymentororkycLink && b.enquiryID && b.refProposal;
+    if (ok || !transientErr) break;
+    console.log(`   Digit getbikeproposal attempt ${attempt} transient (${(b.errorMessage||'').slice(0,60)}) — retrying…`);
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  console.log('   Digit getbikeproposal →',
+    typeof digitCreateBikePropRes.data === 'object' ? JSON.stringify(digitCreateBikePropRes.data).slice(0, 400) : String(digitCreateBikePropRes.data).slice(0, 400));
+
+  log.push({
+    section: 'BIKE — Payment / Issuance (Digit)',
+    step: 'Customer completes KYC → getpaymentafterkyc → payment → getresponseafterpayment',
+    note: 'Headless harness stops at the Create Proposal response (KYC link). Steps 3–4 require a real browser KYC + payment.',
+    req: { url: `${SWAPINS_BASE}/partner/ekyc/getpaymentafterkyc then ${SWAPINS_BASE}/partner/motor/getresponseafterpayment`, method: 'POST', body: '{ enquiryID, applicationId, refProposal, module:"Bike", transId, callbackurl }' },
+    res: { status: 0, ok: false, body: 'Awaits real KYC completion on the Digit portal returned by getbikeproposal.' },
     ms: 0,
   });
 

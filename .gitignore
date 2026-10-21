@@ -16,3 +16,7 @@ vendor-queries-*.html
 # Probe output files from scripts/probe-*.mjs — regenerable, no PII,
 # but keep out of git to avoid noise.
 probe-*.json
+probe-*.md
+# Make/model probe HTML logs forwarded to the vendor on request — contain
+# verified eKYC test PII, same as vendor-e2e-log.html. Keep local.
+vendor-makemodel-logs*.html
